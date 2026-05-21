@@ -28,13 +28,13 @@
 </p>
 
 <p align="center">
-  <a href="https://code-as-room.github.io/">Project Page</a>
-  ·
-  <a href="https://arxiv.org/abs/2605.18451">Paper</a>
+  <a href="https://code-as-room.github.io/"><img src="https://img.shields.io/badge/Project-Page-green.svg" alt="Project Page"></a>
+  <a href="https://arxiv.org/abs/2605.18451"><img src="https://img.shields.io/badge/Paper-arXiv-b31b1b.svg" alt="Paper"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <img src="assets/icon.png" alt="Code-as-Room icon" width="96">
 </p>
 
 ## Overview
@@ -83,7 +83,7 @@ python run_pipeline.py \
   - Initial release of the core 3D room generation pipeline.
 - [ ] Web-based editing and viewing interface.
   - We plan to release a Web UI for editing generated scenes in the browser, with synchronization between the scene, the underlying code, and Blender.
-  - This interface is intended to reduce both time and token cost compared with post-hoc correction inside the agent loop.
+  - This interface is intended to reduce both time and token cost compared with post-hoc correction inside the agent loop :)
 - [ ] 3D assets retrieval checkpoint release.
   - Code-only geometry can be insufficient for representing fine-grained small objects in downstream applications such as robotics. We plan to release retrieval data and checkpoints to improve object-level realism and usability.
 - [ ] Support for more diverse room shapes.
