@@ -64,7 +64,7 @@ class Stage4Runner:
         output_dir: str = "./output",
         verbose: bool = True,
         memory_file: str = "agent_memory.jsonl",
-        model: str = "gemini-3-flash-preview-thinking",
+        model: str = None,
         base_url: str = None,
         api_key: str = None,
     ):
@@ -77,8 +77,17 @@ class Stage4Runner:
         self.prompts = PromptManager()
         self.llm = LLMClient(
             model=model,
-            base_url=base_url or os.environ.get("SCENEGEN_BASE_URL"),
-            api_key=api_key or os.environ.get("SCENEGEN_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+            base_url=(
+                base_url
+                or os.environ.get("SCENEGEN_BASE_URL")
+                or os.environ.get("GEMINI_BASE_URL")
+            ),
+            api_key=(
+                api_key
+                or os.environ.get("SCENEGEN_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            ),
         )
 
         # Data

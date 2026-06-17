@@ -35,6 +35,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DEFAULT_GEMINI_TEXT_MODEL = "gemini-3.5-flash"
+DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+DEFAULT_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+DEFAULT_GEMINI_IMAGE_BASE_URL = "https://generativelanguage.googleapis.com"
+
 # ============================================================================
 # Path setup
 # ============================================================================
@@ -353,8 +362,7 @@ class PipelineConfig:
         stage1_api_key: str = None,
 
         # Stage 2 configuration
-        stage2_model: str = "gemini-3.1-pro-preview-thinking",
-        #stage2_model: str = "gpt-5.5",
+        stage2_model: str = None,
         stage2_base_url: str = None,
         stage2_api_key: str = None,
 
@@ -419,7 +427,7 @@ class PipelineConfig:
         stage11_texture_max_wall_arts: int = 20,
         
         # LLM configuration
-        # model: str = "gemini-3.1-pro-preview-thinking",
+        # model: str = "gemini-3.5-flash",
         base_url: str = None,
         api_key: str = None,
         model: str = None,
@@ -491,32 +499,29 @@ class PipelineConfig:
         self.stage2_base_url = stage2_base_url
         self.stage2_api_key = stage2_api_key
 
-        # Stage7–9 & small-object dedicated LLM overrides
-        self.stage7_model =  "gemini-3.1-pro-preview-thinking"
+        # Stage7-9 & small-object dedicated LLM overrides. None means the
+        # global Gemini/OpenAI-compatible settings are reused.
+        self.stage7_model = stage7_model
         self.stage7_base_url = stage7_base_url
         self.stage7_api_key = stage7_api_key
 
-
-        self.stage8_model =  "gpt-5.5"
+        self.stage8_model = stage8_model
         self.stage8_base_url = stage8_base_url
         self.stage8_api_key = stage8_api_key
 
-
-        self.stage7_small_objects_model =  None
+        self.stage7_small_objects_model = stage7_small_objects_model
         self.stage7_small_objects_base_url = stage7_small_objects_base_url
         self.stage7_small_objects_api_key = stage7_small_objects_api_key
 
-        self.stage8_small_describe_model =  "gemini-3.1-pro-preview-thinking"
+        self.stage8_small_describe_model = stage8_small_describe_model
         self.stage8_small_describe_base_url = stage8_small_describe_base_url
         self.stage8_small_describe_api_key = stage8_small_describe_api_key
 
-
-        self.stage9_small_geometry_model = None
+        self.stage9_small_geometry_model = stage9_small_geometry_model
         self.stage9_small_geometry_base_url = stage9_small_geometry_base_url
         self.stage9_small_geometry_api_key = stage9_small_geometry_api_key
 
-
-        self.stage9_model =  None
+        self.stage9_model = stage9_model
         self.stage9_base_url = stage9_base_url
         self.stage9_api_key = stage9_api_key
         
@@ -539,9 +544,19 @@ class PipelineConfig:
         self.stage8_geometry_retry_delay = stage8_geometry_retry_delay
 
         # LLM
-        self.model = model or os.environ.get("SCENEGEN_MODEL") or "gemini-3.1-pro-preview-thinking"
-        self.base_url = base_url or os.environ.get("SCENEGEN_BASE_URL")
-        self.api_key = api_key or os.environ.get("SCENEGEN_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        self.model = model or os.environ.get("SCENEGEN_MODEL") or DEFAULT_GEMINI_TEXT_MODEL
+        self.base_url = (
+            base_url
+            or os.environ.get("SCENEGEN_BASE_URL")
+            or os.environ.get("GEMINI_BASE_URL")
+            or DEFAULT_GEMINI_OPENAI_BASE_URL
+        )
+        self.api_key = (
+            api_key
+            or os.environ.get("SCENEGEN_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+        )
         self.stage2_max_tokens = stage2_max_tokens
         
         # Runtime
@@ -587,15 +602,18 @@ class PipelineConfig:
         self.stage10_model = (
             stage11_texture_model
             or os.environ.get("SCENEGEN_TEXTURE_MODEL")
-            or "gemini-3-pro-image-preview"
+            or DEFAULT_GEMINI_IMAGE_MODEL
         )
         self.stage10_base_url = (
             stage11_texture_base_url
             or os.environ.get("SCENEGEN_TEXTURE_BASE_URL")
+            or os.environ.get("GEMINI_IMAGE_BASE_URL")
+            or DEFAULT_GEMINI_IMAGE_BASE_URL
         )
         self.stage10_api_key = (
             stage11_texture_api_key
             or os.environ.get("SCENEGEN_TEXTURE_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
             or self.api_key
         )
         self.stage10_image_size = stage11_texture_image_size
@@ -2223,7 +2241,7 @@ Recommended flow: Stage 1-4 → Stage 5-12
                         default="/Applications/Blender.app/Contents/MacOS/Blender",
                         help="Blender executable path")
     parser.add_argument("--stage1-model", type=str, default=None,
-                        help="Stage 1 dedicated model (default: gemini-3.1-pro-preview)")
+                        help="Stage 1 dedicated model (default: reuse global --model)")
     parser.add_argument("--stage1-base-url", type=str, default=None,
                         help="Stage 1 dedicated API base URL")
     parser.add_argument("--stage1-api-key", type=str, default=None,

@@ -29,7 +29,7 @@ class Stage1Runner:
         output_dir: str = "./output",
         max_iterations: int = 3,
         verbose: bool = True,
-        model: str = "[L]gemini-3.1-pro-preview",
+        model: str = None,
         base_url: str = None,
         api_key: str = None,
         memory_file: str = "agent_memory.jsonl"
@@ -41,9 +41,19 @@ class Stage1Runner:
 
         # LLM
         self.llm = ChatOpenAI(
-            model=model,
-            base_url=base_url or os.environ.get("SCENEGEN_BASE_URL"),
-            api_key=api_key or os.environ.get("SCENEGEN_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+            model=model or os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash",
+            base_url=(
+                base_url
+                or os.environ.get("SCENEGEN_BASE_URL")
+                or os.environ.get("GEMINI_BASE_URL")
+                or "https://generativelanguage.googleapis.com/v1beta/openai/"
+            ),
+            api_key=(
+                api_key
+                or os.environ.get("SCENEGEN_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            ),
             temperature=0.7,
             timeout=600,
             request_timeout=600,

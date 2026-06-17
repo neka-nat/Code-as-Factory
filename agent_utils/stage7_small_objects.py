@@ -3251,12 +3251,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="Do not read/write the Memory store")
     parser.add_argument("--dry-run", action="store_true",
                         help="Only do plane discovery, skip the LLM call")
-    parser.add_argument("--model", help="LLM model override",default="gemini-3-flash-preview-thinking")
-    parser.add_argument("--base-url", help="LLM base URL override", default=os.environ.get("SCENEGEN_BASE_URL"))
+    parser.add_argument("--model", help="LLM model override", default=os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash")
+    parser.add_argument("--base-url", help="LLM base URL override", default=os.environ.get("SCENEGEN_BASE_URL") or os.environ.get("GEMINI_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai/")
     parser.add_argument(
         "--api-key",
         help="LLM API key override",
-        default=os.environ.get("SCENEGEN_API_KEY") or os.environ.get("OPENAI_API_KEY"),
+        default=os.environ.get("SCENEGEN_API_KEY") or os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY"),
     )
     parser.add_argument("--parallel", type=int, default=4,
                         help="Number of parent objects to process in parallel "

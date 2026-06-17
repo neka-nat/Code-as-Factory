@@ -192,16 +192,26 @@ def _llm_classify(
     img = _encode_image(image_path)
 
     llm_kwargs = dict(
-        model=model,
+        model=model or os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash",
         temperature=0.0,
         timeout=120,
         request_timeout=120,
         max_retries=2,
     )
-    if base_url:
-        llm_kwargs["base_url"] = base_url
-    if api_key:
-        llm_kwargs["api_key"] = api_key
+    llm_kwargs["base_url"] = (
+        base_url
+        or os.environ.get("SCENEGEN_BASE_URL")
+        or os.environ.get("GEMINI_BASE_URL")
+        or "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+    resolved_api_key = (
+        api_key
+        or os.environ.get("SCENEGEN_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
+    if resolved_api_key:
+        llm_kwargs["api_key"] = resolved_api_key
 
     try:
         llm = ChatOpenAI(**llm_kwargs)
@@ -257,7 +267,7 @@ def classify_scene(
     memory=None,
     manual_override: Optional[str] = None,
     use_llm: bool = True,
-    model: str = "gemini-3-flash-preview-thinking",
+    model: str = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     verbose: bool = True,

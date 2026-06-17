@@ -3,7 +3,7 @@ Stage Texture - Real Texture Map Generation via NanoBanana (Gemini Image)
 ==========================================================================
 
 Generates real texture map PNGs for floor, walls, and wall art using the
-Gemini generateContent image API (gemini-3-pro-image-preview, aka nanobanana).
+Gemini generateContent image API (default: gemini-3.1-flash-image).
 Then rewrites the Blender code produced by Stage 10 (stage10_material) to load
 those textures via ShaderNodeTexImage, so the final render uses photographic
 textures instead of purely procedural shaders.
@@ -61,11 +61,18 @@ except Exception as e:
 # =============================================================================
 # Defaults (reuse render_gen.py conventions)
 # =============================================================================
-DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
-DEFAULT_BASE_URL = os.environ.get("SCENEGEN_TEXTURE_BASE_URL")
+DEFAULT_IMAGE_MODEL = os.environ.get("SCENEGEN_TEXTURE_MODEL") or "gemini-3.1-flash-image"
+DEFAULT_BASE_URL = (
+    os.environ.get("SCENEGEN_TEXTURE_BASE_URL")
+    or os.environ.get("GEMINI_IMAGE_BASE_URL")
+    or os.environ.get("SCENEGEN_BASE_URL")
+    or os.environ.get("GEMINI_BASE_URL")
+    or "https://generativelanguage.googleapis.com"
+)
 DEFAULT_API_KEY = (
     os.environ.get("SCENEGEN_TEXTURE_API_KEY")
     or os.environ.get("SCENEGEN_API_KEY")
+    or os.environ.get("GEMINI_API_KEY")
     or os.environ.get("OPENAI_API_KEY")
 )
 
@@ -163,7 +170,7 @@ ART_KEYWORDS = (
     "wall_decor", "wall decor", "wall_painting", "wall painting",
     "photo_frame", "photo frame", "photograph",
     "tapestry", "art_piece", "art piece",
-    "wall_mirror", "wall mirror", "wall_clock", "wall clock",
+    "wall_clock", "wall clock",
     # Pin / memo / cork / chalk / white / peg boards mounted on the wall
     "corkboard", "cork_board", "cork board",
     "pinboard", "pin_board", "pin board",
@@ -221,7 +228,7 @@ NON_ART_OBJECT_TYPE_WORDS = (
     "pillow", "cushion", "blanket", "book", "magazine", "tv", "speaker",
     "fan", "clock", "radio", "fridge", "oven", "stove", "sink", "toilet",
     "bathtub", "counter", "island", "sideboard", "console", "pouf",
-    "headboard", "footboard", "mattress",
+    "headboard", "footboard", "mattress", "mirror",
 )
 
 
@@ -555,6 +562,8 @@ class StageTextureRunner:
             raw_name = obj.get("name") or ""
             name = raw_name.lower()
             text = otype + " " + name
+            if "mirror" in text:
+                continue
             kw_hit = any(kw in text for kw in ART_KEYWORDS)
             # Fallback: obvious art-naming conventions like "Art_West", "Art-02"
             name_hit = bool(ART_NAME_PREFIX_RE.match(raw_name))

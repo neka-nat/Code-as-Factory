@@ -1032,10 +1032,51 @@ def setup_lighting_and_render():
         return (c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, 1.0)
 
     scene = bpy.context.scene
+
+    def ensure_topdown_camera():
+        from mathutils import Vector
+
+        points = []
+        for obj in bpy.context.scene.objects:
+            if obj.type in {'MESH', 'CURVE', 'SURFACE', 'FONT'}:
+                try:
+                    points.extend(obj.matrix_world @ Vector(corner) for corner in obj.bound_box)
+                except Exception:
+                    pass
+        if points:
+            min_x = min(p.x for p in points)
+            max_x = max(p.x for p in points)
+            min_y = min(p.y for p in points)
+            max_y = max(p.y for p in points)
+            max_z = max(p.z for p in points)
+            center_x = (min_x + max_x) / 2.0
+            center_y = (min_y + max_y) / 2.0
+            span = max(max_x - min_x, max_y - min_y, 1.0)
+        else:
+            center_x = center_y = 0.0
+            max_z = 0.0
+            span = 8.0
+
+        cam = scene.camera
+        if cam is None or cam.name not in bpy.data.objects:
+            bpy.ops.object.camera_add()
+            cam = bpy.context.object
+            cam.name = 'stage12_topdown_camera'
+            scene.camera = cam
+
+        cam.location = (center_x, center_y, max_z + max(8.0, span * 1.6))
+        cam.rotation_euler = (0.0, 0.0, 0.0)
+        cam.data.type = 'ORTHO'
+        cam.data.ortho_scale = span * 1.15
+        cam.data.clip_end = max(100.0, max_z + span * 4.0)
+        return cam
+
+    ensure_topdown_camera()
+
     try:
         scene.render.engine = 'CYCLES'
         scene.cycles.samples = 192
-        scene.cycles.use_denoising = True
+        scene.cycles.use_denoising = False
         if hasattr(scene.cycles, 'use_adaptive_sampling'):
             scene.cycles.use_adaptive_sampling = True
             scene.cycles.adaptive_threshold = 0.01

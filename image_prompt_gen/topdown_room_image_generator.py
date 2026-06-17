@@ -6,9 +6,9 @@ Batch prompt generator (and optional image generator) for top-down interior rend
 python image_prompt_gen/topdown_room_image_generator.py all \
   --api-key "$SCENEGEN_TEXTURE_API_KEY" \
   --base-url "$SCENEGEN_TEXTURE_BASE_URL" \
-  --image-model gemini-3-pro-image-preview \
+  --image-model gemini-3.1-flash-image \
   --count 20 \
-  --prompt-model gpt-4o \
+  --prompt-model gemini-3.5-flash \
   --scene-scope non_residential
 """
 
@@ -22,6 +22,22 @@ import math
 from datetime import datetime
 from typing import Optional
 from pathlib import Path
+
+DEFAULT_GEMINI_TEXT_MODEL = os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash"
+DEFAULT_GEMINI_OPENAI_BASE_URL = (
+    os.environ.get("SCENEGEN_BASE_URL")
+    or os.environ.get("GEMINI_BASE_URL")
+    or "https://generativelanguage.googleapis.com/v1beta/openai/"
+)
+DEFAULT_GEMINI_IMAGE_MODEL = os.environ.get("SCENEGEN_TEXTURE_MODEL") or "gemini-3.1-flash-image"
+DEFAULT_GEMINI_IMAGE_BASE_URL = (
+    os.environ.get("SCENEGEN_TEXTURE_BASE_URL")
+    or os.environ.get("GEMINI_IMAGE_BASE_URL")
+    or os.environ.get("SCENEGEN_BASE_URL")
+    or os.environ.get("GEMINI_BASE_URL")
+    or "https://generativelanguage.googleapis.com"
+)
+
 PROMPT_TEMPLATE = (
     "Top-down orthographic view of a richly furnished {room_type}, camera at 90 degrees straight down. "
     "Designed for {user_type}. "
@@ -187,11 +203,15 @@ def validate_params(params: dict) -> bool:
 
 
 def _openai_chat_base_url(base_url: Optional[str]) -> Optional[str]:
-    """OpenAI-compatible chat uses .../v1/chat/completions. Gemini image uses host root."""
+    """Normalize OpenAI-compatible chat base URLs.
+
+    Google Gemini uses .../v1beta/openai/, while many third-party
+    compatible gateways use .../v1. Preserve either shape.
+    """
     if not base_url:
         return None
     b = base_url.rstrip("/")
-    if b.endswith("/v1"):
+    if b.endswith(("/openai", "/v1", "/v1beta")):
         return b
     return f"{b}/v1"
 
@@ -267,10 +287,15 @@ def generate_params(
 ) -> list:
     from openai import OpenAI
 
-    api_key = api_key or os.environ.get("OPENAI_API_KEY")
+    api_key = (
+        api_key
+        or os.environ.get("SCENEGEN_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
     if not api_key:
         raise EnvironmentError(
-            "API key is required. Either pass --api-key or set OPENAI_API_KEY env var."
+            "API key is required. Pass --api-key or set SCENEGEN_API_KEY/GEMINI_API_KEY."
         )
 
     chat_base = _openai_chat_base_url(base_url)
@@ -341,8 +366,30 @@ def save_output(prompts: list, model: str, output_path: str, template: str = PRO
 # ---------------------------------------------------------------------------
 
 def _normalize_gemini_base_url(base_url: str) -> str:
-    """Strip trailing slash so we can append /v1beta/... consistently."""
-    return base_url.rstrip("/")
+    """Return a Gemini generateContent version root.
+
+    Accepts a native root (https://generativelanguage.googleapis.com),
+    a version root (.../v1 or .../v1beta), or the Gemini OpenAI-compatible
+    chat root (.../v1beta/openai). The returned value is suitable for
+    appending /models/{model}:generateContent.
+    """
+    b = (base_url or DEFAULT_GEMINI_IMAGE_BASE_URL).rstrip("/")
+    if b.endswith("/openai"):
+        b = b[: -len("/openai")]
+    if "generativelanguage.googleapis.com" in b and b.endswith("/v1beta"):
+        return b[: -len("/v1beta")] + "/v1"
+    if b.endswith(("/v1", "/v1beta")):
+        return b
+    return f"{b}/v1"
+
+
+def _gemini_image_headers(base_url: str, api_key: str) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if "generativelanguage.googleapis.com" in (base_url or ""):
+        headers["x-goog-api-key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def _extract_inline_image_bytes(part: dict) -> Optional[bytes]:
@@ -377,7 +424,7 @@ def _call_gemini_image(
 ) -> bytes:
     """
     Call Gemini generateContent (nanobanana-style): POST JSON body as string,
-    URL .../v1beta/models/{model}:generateContent/
+    URL .../v1/models/{model}:generateContent or .../v1beta/models/{model}:generateContent
 
     *reference_images* accepts a list of raw-bytes images that are sent as
     inline image parts alongside the text prompt for visual guidance.
@@ -385,7 +432,7 @@ def _call_gemini_image(
     import requests
 
     root = _normalize_gemini_base_url(base_url)
-    url = f"{root}/v1beta/models/{model}:generateContent/"
+    url = f"{root}/models/{model}:generateContent"
 
     parts: list = [{"text": prompt_text}]
     for img_bytes in (reference_images or []):
@@ -403,19 +450,24 @@ def _call_gemini_image(
                 "parts": parts,
             }
         ],
-        "generationConfig": {
-            "responseModalities": ["TEXT", "IMAGE"],
-            "imageConfig": {
-                "aspectRatio": aspect_ratio,
-                "imageSize": image_size,
-            },
-        },
     }
+
+    # The public Gemini native REST endpoint currently accepts the minimal
+    # image-generation payload consistently, while generationConfig image
+    # knobs have changed names across SDK/REST versions and can be rejected
+    # with HTTP 400. Texture images are mapped to geometry in Blender, so a
+    # successful image is more important here than API-side aspect sizing.
+    if "generativelanguage.googleapis.com" not in root:
+        payload["generationConfig"] = {
+            "responseFormat": {
+                "image": {
+                    "aspectRatio": aspect_ratio,
+                    "imageSize": image_size,
+                }
+            }
+        }
     body = json.dumps(payload, ensure_ascii=False)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = _gemini_image_headers(root, api_key)
 
     resp = requests.request("POST", url, headers=headers, data=body.encode("utf-8"), timeout=timeout)
     if not resp.ok:
@@ -517,9 +569,9 @@ def main() -> int:
     # --- sub-command: prompt ---
     p_prompt = subparsers.add_parser("prompt", help="Generate text prompts via LLM")
     p_prompt.add_argument("--count", type=int, default=20)
-    p_prompt.add_argument("--model", type=str, default="gpt-4o")
+    p_prompt.add_argument("--model", type=str, default=DEFAULT_GEMINI_TEXT_MODEL)
     p_prompt.add_argument("--api-key", type=str, default=None)
-    p_prompt.add_argument("--base-url", type=str, default=None)
+    p_prompt.add_argument("--base-url", type=str, default=DEFAULT_GEMINI_OPENAI_BASE_URL)
     p_prompt.add_argument("--output", type=str,
                           default=os.path.join(os.path.dirname(__file__), "generated_prompts.json"))
     p_prompt.add_argument(
@@ -541,10 +593,10 @@ def main() -> int:
     p_image.add_argument("--prompts", type=str,
                          default=os.path.join(os.path.dirname(__file__), "generated_prompts.json"),
                          help="Path to generated_prompts.json")
-    p_image.add_argument("--image-model", type=str, default="gemini-3-pro-image-preview")
+    p_image.add_argument("--image-model", type=str, default=DEFAULT_GEMINI_IMAGE_MODEL)
     p_image.add_argument("--api-key", type=str, default=None)
-    p_image.add_argument("--base-url", type=str, default=None,
-                         help="Gemini proxy root URL, no /v1 suffix (e.g. http://host:3888)")
+    p_image.add_argument("--base-url", type=str, default=DEFAULT_GEMINI_IMAGE_BASE_URL,
+                         help="Gemini native root/version URL, or a compatible proxy root")
     p_image.add_argument("--output-dir", type=str,
                          default=os.path.join(os.path.dirname(__file__), "generated_images"))
     p_image.add_argument("--delay", type=float, default=2.0,
@@ -557,12 +609,12 @@ def main() -> int:
     # --- sub-command: all (prompt + image in one go) ---
     p_all = subparsers.add_parser("all", help="Generate prompts then images in one go")
     p_all.add_argument("--count", type=int, default=20)
-    p_all.add_argument("--prompt-model", type=str, default="gpt-4o",
+    p_all.add_argument("--prompt-model", type=str, default=DEFAULT_GEMINI_TEXT_MODEL,
                        help="LLM model for prompt generation")
-    p_all.add_argument("--image-model", type=str, default="gemini-3-pro-image-preview",
+    p_all.add_argument("--image-model", type=str, default=DEFAULT_GEMINI_IMAGE_MODEL,
                        help="Model for image generation")
     p_all.add_argument("--api-key", type=str, default=None)
-    p_all.add_argument("--base-url", type=str, default=None)
+    p_all.add_argument("--base-url", type=str, default=DEFAULT_GEMINI_OPENAI_BASE_URL)
     p_all.add_argument("--output", type=str,
                        default=os.path.join(os.path.dirname(__file__), "generated_prompts.json"))
     p_all.add_argument("--output-dir", type=str,
@@ -590,9 +642,15 @@ def main() -> int:
         parser.print_help()
         return 2
 
-    api_key = getattr(args, "api_key", None) or os.environ.get("OPENAI_API_KEY")
+    api_key = (
+        getattr(args, "api_key", None)
+        or os.environ.get("SCENEGEN_API_KEY")
+        or os.environ.get("SCENEGEN_TEXTURE_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
     if not api_key:
-        print("[ERROR] API key required. Pass --api-key or set OPENAI_API_KEY env var.")
+        print("[ERROR] API key required. Pass --api-key or set SCENEGEN_API_KEY/GEMINI_API_KEY.")
         return 2
     rectangular_ratio = getattr(args, "rectangular_ratio", 0.85)
     if not (0 < rectangular_ratio <= 1):
@@ -657,10 +715,10 @@ if __name__ == "__main__":
 python /Users/yangyixuan/SceneGen_Agent_final/image_prompt_gen/topdown_room_image_generator.py  all \
   --api-key "$SCENEGEN_TEXTURE_API_KEY" \
   --base-url "$SCENEGEN_TEXTURE_BASE_URL" \
-  --image-model gemini-3-pro-image-preview \
+  --image-model gemini-3.1-flash-image \
   --aspect-ratio 16:9 \
   --image-size 1K \
   --count 20 \
-  --prompt-model gpt-4o \
+  --prompt-model gemini-3.5-flash \
   --scene-scope non_residential
 """

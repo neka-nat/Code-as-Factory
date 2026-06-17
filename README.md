@@ -97,7 +97,7 @@ python run_pipeline.py \
 
 System:
 
-- Python 3.10+
+- Python 3.13+
 - Blender 3.6+ or Blender 4.x
 - An OpenAI-compatible chat/VLM API endpoint for the text and vision stages
 - Optional image-generation endpoint for Stage 11 texture generation
@@ -123,14 +123,15 @@ pip install langchain-openai langchain-core openai pillow requests
 Configure your API credentials with environment variables:
 
 ```bash
-export SCENEGEN_MODEL="gemini-3.1-pro-preview-thinking"
-export SCENEGEN_BASE_URL="https://your-openai-compatible-endpoint/v1"
-export SCENEGEN_API_KEY="your-api-key"
+export SCENEGEN_MODEL="gemini-3.5-flash"
+export SCENEGEN_BASE_URL="https://generativelanguage.googleapis.com/v1beta/openai/"
+export SCENEGEN_API_KEY="your-gemini-api-key"
 
-# Optional: only needed for Stage 11 real texture generation.
-export SCENEGEN_TEXTURE_MODEL="gemini-3-pro-image-preview"
-export SCENEGEN_TEXTURE_BASE_URL="https://your-image-generation-endpoint"
-export SCENEGEN_TEXTURE_API_KEY="your-texture-api-key"
+# Optional: only needed to override Stage 11 texture generation.
+# By default Stage 11 reuses SCENEGEN_API_KEY and uses Gemini native image generation.
+export SCENEGEN_TEXTURE_MODEL="gemini-3.1-flash-image"
+export SCENEGEN_TEXTURE_BASE_URL="https://generativelanguage.googleapis.com"
+export SCENEGEN_TEXTURE_API_KEY="$SCENEGEN_API_KEY"
 ```
 
 You can also put these values in a JSON config file instead of environment variables. Copy `example/pipeline_config.example.json` to a local file, then edit `model`, `base_url`, `api_key`, `stage11_texture_model`, `stage11_texture_base_url`, and `stage11_texture_api_key` there.
@@ -224,12 +225,12 @@ Config keys use the CLI option names with underscores instead of hyphens, for ex
   "output_dir": "outputs",
   "start": 1,
   "end": 12,
-  "model": "gemini-3.1-pro-preview-thinking",
-  "base_url": "https://your-openai-compatible-endpoint/v1",
-  "api_key": "your-api-key",
-  "stage11_texture_model": "gemini-3-pro-image-preview",
-  "stage11_texture_base_url": "https://your-image-generation-endpoint",
-  "stage11_texture_api_key": "your-texture-api-key",
+  "model": "gemini-3.5-flash",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+  "api_key": "your-gemini-api-key",
+  "stage11_texture_model": "gemini-3.1-flash-image",
+  "stage11_texture_base_url": "https://generativelanguage.googleapis.com",
+  "stage11_texture_api_key": "your-gemini-api-key",
   "wall_intensity": "subtle"
 }
 ```
@@ -249,7 +250,7 @@ Generate prompt JSON only:
 ```bash
 python image_prompt_gen/topdown_room_image_generator.py prompt \
   --count 20 \
-  --model gpt-4o \
+  --model gemini-3.5-flash \
   --api-key "$SCENEGEN_API_KEY" \
   --base-url "$SCENEGEN_BASE_URL" \
   --scene-scope non_residential \
@@ -261,7 +262,7 @@ Generate images from an existing prompt file:
 ```bash
 python image_prompt_gen/topdown_room_image_generator.py image \
   --prompts image_prompt_gen/generated_prompts_example.json \
-  --image-model gemini-3-pro-image-preview \
+  --image-model gemini-3.1-flash-image \
   --api-key "$SCENEGEN_TEXTURE_API_KEY" \
   --base-url "$SCENEGEN_TEXTURE_BASE_URL" \
   --output-dir generated_images/example \
@@ -274,8 +275,8 @@ Run both steps in one command:
 ```bash
 python image_prompt_gen/topdown_room_image_generator.py all \
   --count 20 \
-  --prompt-model gpt-4o \
-  --image-model gemini-3-pro-image-preview \
+  --prompt-model gemini-3.5-flash \
+  --image-model gemini-3.1-flash-image \
   --api-key "$SCENEGEN_TEXTURE_API_KEY" \
   --base-url "$SCENEGEN_TEXTURE_BASE_URL" \
   --scene-scope non_residential \
@@ -287,7 +288,7 @@ python image_prompt_gen/topdown_room_image_generator.py all \
 
 The prompt generator writes a JSON file with `metadata` and `prompts`. Each prompt item contains the original structured parameters plus the final image prompt string. The image generator writes PNGs named from the prompt id, room type, and style.
 
-Important: `--base-url` for `prompt` mode is OpenAI-compatible chat style and may include `/v1`. `--base-url` for `image` mode is the image-generation proxy root; the script appends the Gemini `v1beta/models/...:generateContent` path internally.
+Important: `--base-url` for `prompt` mode is OpenAI-compatible chat style and may include `/v1beta/openai/`. `--base-url` for `image` mode is the Gemini native image root, normally `https://generativelanguage.googleapis.com`; the script appends the Gemini `v1/models/...:generateContent` path internally. For the Gemini native endpoint the image request uses the minimal REST payload, so `--aspect-ratio` and `--image-size` are best-effort options for compatible proxy endpoints rather than required Google REST fields.
 
 ## Small-Object Generation
 

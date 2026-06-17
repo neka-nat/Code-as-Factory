@@ -923,9 +923,19 @@ class Stage2Runner:
         self.verbose = verbose
 
         self.llm = ChatOpenAI(
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            model=model or os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash",
+            base_url=(
+                base_url
+                or os.environ.get("SCENEGEN_BASE_URL")
+                or os.environ.get("GEMINI_BASE_URL")
+                or "https://generativelanguage.googleapis.com/v1beta/openai/"
+            ),
+            api_key=(
+                api_key
+                or os.environ.get("SCENEGEN_API_KEY")
+                or os.environ.get("GEMINI_API_KEY")
+                or os.environ.get("OPENAI_API_KEY")
+            ),
             temperature=1,
             max_tokens=max_tokens,
             timeout=600,

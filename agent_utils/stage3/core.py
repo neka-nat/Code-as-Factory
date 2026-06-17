@@ -46,13 +46,20 @@ class PromptManager:
 class LLMClient:
     """LLM client wrapper"""
 
-    DEFAULT_MODEL = "[L]gemini-3.1-pro-preview"
-    DEFAULT_BASE_URL = os.environ.get("SCENEGEN_BASE_URL")
-    DEFAULT_API_KEY = os.environ.get("SCENEGEN_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    DEFAULT_MODEL = os.environ.get("SCENEGEN_MODEL") or "gemini-3.5-flash"
+    DEFAULT_BASE_URL = (
+        os.environ.get("SCENEGEN_BASE_URL")
+        or os.environ.get("GEMINI_BASE_URL")
+        or "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+    DEFAULT_API_KEY = (
+        os.environ.get("SCENEGEN_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+    )
 
     # Native OpenAI model configuration
     OPENAI_MODELS = {
-        "gpt-5.5",
         "gpt-5.1-codex-max",
         "gpt-5.1-codex",
         "gpt-5.1",
@@ -78,7 +85,6 @@ class LLMClient:
     REASONING_MODEL_PREFIXES = (
         "gpt-5",
         "gpt-5.1",
-        "gpt-5.5",
         "o1",
         "o3",
         "o4",
