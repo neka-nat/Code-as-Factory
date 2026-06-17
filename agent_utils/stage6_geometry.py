@@ -199,6 +199,7 @@ class StageGeometryRunner:
         # Initialize
         self.memory = Memory(workspace_dir=current_dir, memory_file=memory_file) if use_memory else None
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
         
         # Data
         self.describe_data: Dict = {}
@@ -214,6 +215,31 @@ class StageGeometryRunner:
         self.progress_file = os.path.join(self.output_dir, "geometry_progress.json")
         self._save_lock = threading.Lock()
     
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:
+            if self.verbose:
+                print(f"Stage6: cannot read scene_type ({exc}); using generic geometry prompts")
+            return fallback
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
     def _log(self, msg: str, level: str = "info"):
         if self.verbose:
             prefix = {
@@ -794,6 +820,101 @@ class StageGeometryRunner:
             )
         return ""
 
+    def _looks_industrial_object(self, obj: DetailedObject) -> bool:
+        s = " ".join([
+            obj.name or "",
+            obj.object_type or "",
+            obj.description or "",
+            obj.material_description or "",
+        ]).lower()
+        keywords = (
+            "cnc", "machining center", "machining cell", "machine tool",
+            "lathe", "milling machine", "grinder station", "press brake",
+            "hydraulic press", "stamping press", "injection molding",
+            "molding machine", "conveyor", "assembly line", "production line",
+            "robot arm", "robot cell", "cobot", "safety fence", "safety cage",
+            "guard fence", "guard rail", "pallet rack", "storage rack",
+            "parts rack", "bin rack", "parts bin", "tool cabinet",
+            "control cabinet", "electrical cabinet", "switchgear",
+            "industrial workbench", "assembly bench", "inspection table",
+            "packing table", "server rack", "compressor", "utility skid",
+            "agv", "forklift",
+        )
+        return any(k in s for k in keywords)
+
+    def _industrial_geometry_hint(self, obj: DetailedObject) -> str:
+        if not (self._is_industrial_scene() or self._looks_industrial_object(obj)):
+            return ""
+        label = " ".join([
+            obj.name or "",
+            obj.object_type or "",
+            obj.description or "",
+        ]).lower()
+        hints = [
+            "INDUSTRIAL EQUIPMENT GEOMETRY RULES:",
+            "- Preserve factory semantics. Do not turn machinery into generic residential cabinets, desks, wardrobes, or decor.",
+            "- Use structural parts that read from top-down and 3/4 views: enclosures, frames, rails, belts, posts, panels, doors, control panels, feet, and safety guards.",
+            "- Keep loose tools, workpieces, bins, clipboards, tablets, cables, and paperwork OUT of the main object geometry unless they are physically attached. Those are small objects handled later.",
+            "- Use part names that imply material: glass_window, rubber_belt, steel_frame, safety_yellow_rail, red_estop_button, control_panel, acrylic_guard.",
+        ]
+        if any(k in label for k in ("cnc", "machining center", "machine center", "lathe", "milling", "mill", "grinder", "press", "molding machine")):
+            hints.extend([
+                "ENCLOSED / OPEN MACHINE:",
+                "- Model a main machine_base or enclosure_body filling most of the bbox.",
+                "- Add front/side access door panels as thin boxes on the front face (y ~= -depth/2).",
+                "- Add a distinct control_panel box on the operator side; small attached buttons/lights are allowed.",
+                "- If a viewing window is visible, name it glass_window and keep it thin.",
+                "- Do not create tabletop clutter such as tools or parts as part of the machine body.",
+            ])
+        if "conveyor" in label or "assembly line" in label or "production line" in label:
+            hints.extend([
+                "CONVEYOR / ASSEMBLY LINE:",
+                "- Long axis must be along X in canonical pose; base_rotation will orient it in world.",
+                "- Emit a dark rubber_belt top slab near the bbox top, metal side_rails, support legs, and a frame below.",
+                "- Optional rollers should be a small representative set, not dozens of tiny repeated parts.",
+                "- Do not place workpieces or bins on the belt as part geometry.",
+            ])
+        if "robot" in label or "cobot" in label:
+            hints.extend([
+                "ROBOT / ROBOT CELL:",
+                "- Use a pedestal/base, lower_arm, upper_arm, wrist, and end_effector if the bbox represents a robot arm.",
+                "- If the bbox represents the whole cell, include safety_fence posts/rails around the perimeter and a simple robot pedestal inside.",
+                "- Keep the arm raised within the bbox and avoid flat furniture-like shapes.",
+            ])
+        if "safety fence" in label or "guard fence" in label or "guard rail" in label or "safety cage" in label:
+            hints.extend([
+                "SAFETY FENCE / GUARD:",
+                "- Model as thin vertical posts plus horizontal rails or mesh panels, not a solid wall.",
+                "- Use repeated but limited posts (4-8 max) and thin rail boxes spanning between them.",
+                "- Leave the interior visually open.",
+            ])
+        if "pallet rack" in label or "storage rack" in label or "parts rack" in label or "shelving rack" in label or "server rack" in label:
+            hints.extend([
+                "RACK / SERVER RACK:",
+                "- Use open vertical uprights and horizontal shelves/beams; do not make a single solid cabinet.",
+                "- Rack shelves should be usable horizontal planes for later small-object/bin placement.",
+                "- Server racks may have a front mesh/glass door panel but should remain tall equipment racks.",
+            ])
+        if "control cabinet" in label or "electrical cabinet" in label or "control panel" in label or "switchgear" in label:
+            hints.extend([
+                "CONTROL / ELECTRICAL CABINET:",
+                "- Tall metal cabinet body with front door seam, handle, indicator lights, and attached red emergency-stop button if visible.",
+                "- Keep controls attached to the front face; do not generate loose consoles around it.",
+            ])
+        if "workbench" in label or "work table" in label or "assembly bench" in label or "inspection table" in label or "packing table" in label:
+            hints.extend([
+                "INDUSTRIAL WORKBENCH / INSPECTION TABLE:",
+                "- Generate only the bench/table body: top slab, metal frame, legs, lower shelf or drawers if visible.",
+                "- Do not generate tools, parts trays, jigs, monitors, or workpieces on top as part geometry.",
+                "- The top slab must reach the bbox top so Stage7 can detect the support surface.",
+            ])
+        if "pallet" in label and "rack" not in label:
+            hints.extend([
+                "PALLET / MATERIAL PLATFORM:",
+                "- Low slatted pallet: several parallel deck boards and a few cross runners, not one solid block.",
+            ])
+        return "\n".join(hints) + "\n"
+
     def _generate_geometry_for_object(self, obj: DetailedObject) -> bool:
         """Generate detailed geometry for a single object"""
         self._log(f"Generating: {obj.name} ({obj.object_type})", "geometry")
@@ -825,6 +946,17 @@ CANONICAL (axis-aligned) pose as if it has NO rotation:
 - The pipeline will rotate your geometry by {rot_deg} degrees automatically.
 - Therefore: set "rotation" to [0, 0, 0] for ALL parts unless the part
   itself is structurally angled (e.g., a backrest tilted relative to a seat).
+"""
+
+        industrial_hint = self._industrial_geometry_hint(obj)
+        industrial_system_addendum = ""
+        if industrial_hint:
+            industrial_system_addendum = """
+INDUSTRIAL / FACTORY EQUIPMENT ADDENDUM:
+- When the object is a CNC, machine, conveyor, robot, safety fence, rack, control cabinet, pallet, workbench, inspection station, utility skid, or server rack, follow the industrial hint in the runtime input.
+- Industrial equipment should be built from structural primitives: enclosures, frames, rails, panels, belts, posts, shelves, doors, vents, control panels, and attached buttons/lights.
+- Avoid residential furniture semantics and avoid loose surface clutter as body geometry.
+- Open racks, guard fences, and machine frames should remain visibly open; do not collapse them into solid blocks unless the real object is an enclosed machine.
 """
 
         system_prompt = f"""You are a 3D modeling expert. Generate primitive shapes to create a realistic representation of the given object.
@@ -942,6 +1074,7 @@ Concretely:
 - The base cabinet body fills the volume below the slab, from
   z = -{dims[2]/2:.3f} (bbox bottom) up to the underside of the slab.
 
+{industrial_system_addendum}
 Output ONLY valid JSON:
 {{
   "parts": [
@@ -977,6 +1110,7 @@ Part count guidelines:
 
         lab_hint = self._lab_double_deck_geometry_hint(obj.name, dims)
         lab_block = f"{lab_hint}\n" if lab_hint else ""
+        industrial_block = f"{industrial_hint}\n" if industrial_hint else ""
 
         user_content = f"""Generate geometry for:
 
@@ -987,7 +1121,7 @@ Part count guidelines:
 **Material**: {obj.material_description}
 **Color**: {obj.color_description}
 
-{lab_block}REMEMBER: 
+{lab_block}{industrial_block}REMEMBER:
 - (0,0,0) is the GEOMETRIC CENTER of the bounding box
 - Z ranges from -{dims[2]/2:.2f} (bottom) to +{dims[2]/2:.2f} (top)
 - Front faces -Y direction

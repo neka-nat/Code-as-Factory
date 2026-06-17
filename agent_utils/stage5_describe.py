@@ -1248,6 +1248,7 @@ class StageDescribeRunner:
         # Initialize
         self.memory = Memory(workspace_dir=current_dir, memory_file=memory_file) if use_memory else None
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
         
         # Data
         self.scene_code: str = None
@@ -1256,6 +1257,31 @@ class StageDescribeRunner:
         self.inventory_objects: List[Dict[str, Any]] = []
         self.orphan_objects: List[Dict[str, Any]] = []
     
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:
+            if self.verbose:
+                print(f"Stage5: cannot read scene_type ({exc}); using generic prompts")
+            return fallback
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
     def _log(self, msg: str, level: str = "info"):
         if self.verbose:
             prefix = {
@@ -1426,6 +1452,7 @@ class StageDescribeRunner:
                         "zone_id": zone_id,
                         "zone_name": zone_name,
                         "structure_hint": obj.get("structure_hint"),
+                        "industrial_role": obj.get("industrial_role"),
                     })
 
         for item in inventory:
@@ -1455,6 +1482,7 @@ class StageDescribeRunner:
                     "zone_id": minor.get("zone_id"),
                     "zone_name": None,
                     "structure_hint": None,
+                    "industrial_role": None,
                 }
                 inventory.append(target)
             target["stage2_minor"] = {
@@ -1587,7 +1615,8 @@ class StageDescribeRunner:
                 f"{i + 1}. id={orphan.get('source_object_id')} | "
                 f"name={orphan.get('name')} | category={orphan.get('category')} | "
                 f"placement={orphan.get('placement_type')} | "
-                f"parent={orphan.get('parent_name')} | zone={orphan.get('zone_name') or orphan.get('zone_id')}\n"
+                f"parent={orphan.get('parent_name')} | zone={orphan.get('zone_name') or orphan.get('zone_id')} | "
+                f"industrial_role={orphan.get('industrial_role')} | structure_hint={orphan.get('structure_hint')}\n"
             )
 
         system_prompt = """You describe semantic inventory objects that were detected in Stage 1/2 but are missing from the generated Blender bbox code.
@@ -1611,7 +1640,8 @@ Rules:
 - Use English.
 - Do not invent unsupported objects; describe only the input orphan list.
 - Preserve source_object_id and name exactly.
-- For lab surface objects, mention the parent bench/surface when given."""
+- For lab surface objects, mention the parent bench/surface when given.
+- For industrial scenes, preserve machine/storage/safety semantics: CNC, robot cell, conveyor, pallet rack, control cabinet, safety fence, workbench, inspection station, tooling, bins, and material-flow equipment should not be described as residential furniture or decor."""
 
         user_content = f"""Reference image plus orphan inventory:
 
@@ -1690,7 +1720,39 @@ Generate compact descriptions for every orphan object."""
    - Collection/Zone: {obj.collection}
 """)
         
-        system_prompt = """You are an interior design expert. Based on the provided top-down floor plan image and the object list extracted from code, generate detailed descriptions for each object.
+        if self._is_industrial_scene():
+            subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+            system_prompt = f"""You are a manufacturing facility scene expert. Based on the provided top-down factory / industrial floor image and the object list extracted from code, generate detailed descriptions for each object. Scene subtype: {subtype}.
+
+For each object, analyze the image and provide:
+1. **object_type**: The specific industrial object type, such as "CNC machining center", "lathe", "conveyor segment", "robot arm cell", "safety fence", "pallet rack", "control cabinet", "tool cabinet", "workbench", "inspection table", "server rack", or "parts bin rack". Do NOT downgrade machines to generic cabinets/tables.
+2. **appearance**: Describe the visible industrial structure: enclosure, belt, rollers, robot pedestal/arm, fence posts/rails, rack uprights/beams, control panel, doors, windows, warning beacons, vents, or access panels. For benches/worktables, mention visible tools, jigs, fixtures, trays, bins, workpieces, clipboards, or tablets on top when present.
+3. **material_description**: Use industrial materials such as powder-coated metal, painted metal, stainless steel, brushed aluminum, rubber belt, glass/acrylic window, concrete, epoxy-coated floor, or plastic bins.
+4. **color_description**: Describe dominant industrial colors, including safety yellow, emergency red, grey machine panels, black rubber, stainless silver, and floor-marking colors when visible.
+5. **description**: A complete 1-2 sentence description combining object function, structure, material, and placement.
+
+Output ONLY valid JSON (no markdown, no explanation), following this exact structure:
+{{
+  "objects": [
+    {{
+      "name": "object_name_from_code",
+      "object_type": "specific object type",
+      "appearance": "appearance description",
+      "material_description": "material description",
+      "color_description": "color description",
+      "description": "complete description in 1-2 sentences"
+    }}
+  ]
+}}
+
+Important:
+- Match each object by its name from the code.
+- Base descriptions on what you SEE in the image and on the object's name/geometry.
+- Preserve factory semantics: conveyors are conveyors, robot cells are robot cells, racks are open racks, safety fences are guarded barriers.
+- Do not invent residential decor such as plants, pillows, candles, rugs, framed art, or vases.
+- Keep loose tools, workpieces, bins, and paperwork as surface props in the description; downstream stages may place them separately."""
+        else:
+            system_prompt = """You are an interior design expert. Based on the provided top-down floor plan image and the object list extracted from code, generate detailed descriptions for each object.
 
 For each object, analyze the image and provide:
 1. **object_type**: What type of furniture/item is this (e.g., "king bed", "armchair", "nightstand", "table lamp")
@@ -1770,7 +1832,32 @@ Please generate detailed English descriptions for each object, output in JSON fo
         """Generate room overall style description"""
         self._log("Analyzing room style...", "style")
         
-        system_prompt = """You are an interior design expert. Analyze the provided top-down floor plan image and determine the overall room style.
+        if self._is_industrial_scene():
+            subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+            system_prompt = f"""You are an industrial facility visual analyst. Analyze the provided top-down factory / industrial floor image and determine the overall facility style and material palette. Scene subtype: {subtype}.
+
+Output ONLY valid JSON (no markdown, no explanation), following this exact structure:
+{{
+  "room_style": {{
+    "style_name": "style name (e.g., Clean Manufacturing Floor, Machine Shop, Robotic Assembly Cell, Warehouse Industrial)",
+    "style_description": "detailed style description in 2-3 sentences",
+    "color_palette": ["primary color 1", "primary color 2", "primary color 3"],
+    "mood": "atmosphere description (e.g., utilitarian and organized, clean and technical, heavy-duty and active)",
+    "era": "era style (e.g., contemporary industrial, modern automated, legacy workshop)",
+    "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]
+  }}
+}}
+
+Analyze:
+- Machine and equipment color scheme
+- Safety colors and floor markings
+- Material choices such as concrete, epoxy floor, painted metal, stainless steel, rubber belts, acrylic guards
+- Facility layout: cells, aisles, racks, conveyor lines, workbenches
+- Overall industrial atmosphere
+
+Use English for all descriptions. Do not describe the space as cozy residential interior design."""
+        else:
+            system_prompt = """You are an interior design expert. Analyze the provided top-down floor plan image and determine the overall room style.
 
 Output ONLY valid JSON (no markdown, no explanation), following this exact structure:
 {

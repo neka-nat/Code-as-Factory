@@ -1,0 +1,136 @@
+[STAGE 1 - INDUSTRIAL / FACTORY-SPECIFIC ADDENDUM]
+
+This addendum is appended to the Stage 1 base prompt ONLY when the scene is
+classified as "industrial". It overrides the base prompt where they conflict;
+the base prompt still applies for zones, parent_object rules, walls, openings,
+and the JSON schema.
+
+WHY THIS ADDENDUM EXISTS
+Industrial top-down scenes are not furnished rooms. The important items are
+machines, material-flow equipment, storage, safety barriers, utility cabinets,
+and marked circulation aisles. If you treat these as residential furniture, the
+pipeline under-estimates scale and replaces factory equipment with generic
+cabinets/tables.
+
+==============================================================================
+A. SCALE PRIORS FOR FACTORY SCENES
+==============================================================================
+
+A.0 OUTPUT-FIELD AXIS CONTRACT
+Write `estimated_dimensions` as "W m x D m" where:
+- W is the horizontal/east-west span in the image.
+- D is the vertical/north-south span in the image.
+The orientation must match the top-down image: if the visible floor is wider
+than tall, W must be greater than D.
+
+A.1 STANDARD INDUSTRIAL ANCHORS
+Use these before guessing scale:
+- Personnel door:                         W 0.9 m
+- Roll-up / loading door:                 W 2.5-4.0 m
+- Workbench / assembly bench:             1.5-2.4 m x 0.7-1.0 m
+- CNC / machining center footprint:       2.0-3.5 m x 1.8-3.0 m
+- Lathe / mill / grinder footprint:       1.5-3.0 m x 0.8-1.8 m
+- Injection molding / press machine:      3.0-6.0 m x 1.5-3.0 m
+- Conveyor segment visible in one room:   3.0-8.0 m x 0.6-1.2 m
+- Industrial robot arm cell envelope:     3.0-5.0 m x 3.0-5.0 m
+- Safety fence / machine guard height:    1.6-2.2 m
+- Pallet:                                 1.2 m x 1.0 m
+- Pallet rack bay:                        W 2.7 m, D 1.1 m
+- Control cabinet / electrical cabinet:   W 0.8-1.2 m, D 0.4-0.8 m
+- Tool cabinet:                           W 0.7-1.2 m, D 0.5-0.7 m
+- Forklift / AGV lane width:              2.5-3.5 m
+
+A.2 CLEARANCE AND CIRCULATION RULES
+Industrial spaces require clearances around equipment. Do not shrink the room
+to the visible machine footprints.
+- Pedestrian aisle:                       >= 1.0 m
+- Operator aisle in front of machines:    >= 1.2 m
+- Maintenance side clearance:             >= 0.8 m
+- Forklift / AGV / material aisle:        >= 2.5 m
+- Robot cell fenced clearance:            robot reach + 0.8 m safety margin
+- Clearance in front of electrical panels/control cabinets: >= 1.0 m
+- Pallet staging lane:                    pallet depth + >= 1.2 m aisle
+
+A.3 TYPICAL ROOM FOOTPRINTS
+Treat these as guides, not exact values. Convert long/short to W/D using the
+image orientation rule above.
+- Small garage workshop:                         ~6 m x 5 m
+- Machine-shop cell with 1-2 machines:           ~8 m x 6 m
+- Robot cell with safety fence:                  ~9 m x 7 m
+- Small assembly line / conveyor room:           ~12 m x 8 m
+- Mixed factory floor with several workcells:    ~15 m x 10 m
+- Warehouse rack aisle / pallet staging area:    ~12 m x 9 m
+- Server room with 2-4 rack rows:                ~8 m x 6 m
+
+A.4 SCALE PROCEDURE
+1. Choose the clearest anchor object from A.1, preferably near image center.
+2. Estimate pixels-per-metre from that anchor.
+3. Measure horizontal room span (W) and vertical room span (D).
+4. Cross-check against A.2 clearances and A.3 typical footprints.
+5. If machines, conveyors, racks, or robot cells cannot physically fit with
+   aisles, increase the estimate before returning.
+6. Record evidence in `scale_reference_objects`, for example:
+   "CNC assumed 2.8 m wide", "forklift aisle requires >=2.5 m",
+   "robot cell safety fence implies ~9 m x 7 m".
+
+==============================================================================
+B. INDUSTRIAL OBJECT EXTRACTION RULES
+==============================================================================
+
+B.1 MAJOR FLOOR OBJECTS
+The following are MAJOR floor objects, even if they are narrow or against a wall:
+- Production equipment: CNC machine, lathe, milling machine, grinder, press,
+  injection molding machine, laser cutter, 3D printer, compressor, pump skid.
+- Material flow: conveyor, roller table, AGV, forklift, pallet, staging table.
+- Robotics and safety: robot arm, robot pedestal, safety fence, machine guard,
+  light curtain post, safety gate.
+- Storage and utilities: pallet rack, parts rack, bin rack, tool cabinet,
+  control cabinet, electrical panel, server rack, cooling unit.
+- Work areas: workbench, assembly bench, inspection table, packing table.
+
+B.2 MINOR OBJECTS
+Minor objects should be visually supported and parented correctly:
+- On benches/tables: tools, jigs, fixtures, parts trays, bins, workpieces,
+  calipers, clipboard, tablet, small control box.
+- On racks/shelves: individual bins, boxes, trays, parts containers.
+- Wall-mounted: safety signs, pegboards, hose reels, cable reels, fire
+  extinguishers, mounted control panels, instruction boards, clocks.
+- Floor minor/small: cones, small bins, cable loops, mats, floor markers.
+Do not invent residential decor such as plants, candles, throw pillows, art
+prints, rugs, vases, or decorative trays unless the image clearly shows them.
+
+B.3 OPTIONAL FIELDS FOR INDUSTRIAL OBJECTS
+You MAY add these fields inside object entries. They are optional and must not
+replace the required Stage 1 fields:
+- `industrial_role`: one of
+  "machine" | "storage" | "transport" | "safety" | "inspection" |
+  "workbench" | "utility" | "server" | "other"
+- `structure_hint`: one of
+  "enclosed_machine" | "open_machine" | "conveyor_line" | "robot_cell" |
+  "pallet_rack" | "control_cabinet" | "safety_fence" | "workbench" |
+  "server_rack" | "utility_skid"
+Use these hints only when the image supports them.
+
+B.4 COMMON STRUCTURE INTERPRETATIONS
+- A CNC / machining center is one enclosed machine, not a cabinet plus a desk.
+- A conveyor is one long machine with belt/rollers; do not split every roller
+  into separate Stage 1 objects.
+- A robot cell is a robot/pedestal plus safety fence/gate/control cabinet.
+  Emit the visible physical items separately when they are distinguishable.
+- A pallet rack is storage infrastructure; pallets/bins sitting in it may be
+  separate minor or major objects depending on size and visibility.
+- Floor markings and safety lanes are architectural/floor features, not rugs.
+  Put them in architectural_features if they are large markings, or minor floor
+  objects if they are small movable cones/signs.
+
+==============================================================================
+C. FINAL INDUSTRIAL CHECKLIST
+==============================================================================
+Before returning JSON:
+- Every visible machine/workcell/rack/control cabinet is in object_hierarchy.
+- Clear material-flow and pedestrian aisles are reflected in scale.
+- Safety fences, guard rails, and gates are not omitted.
+- Control cabinets/electrical panels are not mistaken for wardrobes.
+- Conveyors/assembly lines remain long and aligned with the image.
+- Residential decorative defaults were not invented.
+- `estimated_dimensions` uses image-horizontal W first and image-vertical D second.

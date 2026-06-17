@@ -275,6 +275,7 @@ class StageTextureRunner:
             if use_memory
             else None
         )
+        self.scene_type_info = self._load_scene_type_info()
 
         self.texture_model = texture_model
         self.texture_base_url = texture_base_url
@@ -323,6 +324,49 @@ class StageTextureRunner:
             "save": "💾",
         }.get(level, "")
         print(f"{prefix} {msg}")
+
+    # ------------------------------------------------------------------
+    # Scene-type helpers
+    # ------------------------------------------------------------------
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:  # noqa: BLE001
+            if self.verbose:
+                print(
+                    f"Stage11: cannot read scene_type ({exc}); "
+                    "using generic texture prompt"
+                )
+            return fallback
+
+    def _refresh_scene_type_from_material_config(self) -> None:
+        info = self.material_config.get("scene_type_info")
+        if isinstance(info, dict) and info.get("scene_type"):
+            self.scene_type_info = info
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_texture_context(self) -> str:
+        subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+        return (
+            f"industrial/factory scene subtype={subtype}; prefer utilitarian, "
+            "manufacturing-grade surfaces with no residential decoration"
+        )
 
     # ------------------------------------------------------------------
     # Load upstream data
@@ -375,6 +419,7 @@ class StageTextureRunner:
 
         # 2) Floor / wall material JSON
         #    Prefer material_config.json; otherwise parse from code constants.
+        self._refresh_scene_type_from_material_config()
         self.floor_material = self.material_config.get("floor_material", {})
         self.wall_material = self.material_config.get("wall_material", {})
         if not self.floor_material or not self.wall_material:
@@ -807,6 +852,18 @@ class StageTextureRunner:
         raw_desc = fm.get("description", "") or f"{mt} floor in {pat} pattern"
         desc = _sanitize_description(raw_desc)
         bc = fm.get("base_color", [0.5, 0.35, 0.2])
+        if self._is_industrial_scene():
+            return (
+                f"Seamless tileable PBR albedo texture of sealed industrial {mt} floor, "
+                f"solid utilitarian surface, {desc}. "
+                f"Dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
+                f"Subtle concrete pores, fine anti-slip grain, light scuffs, faint saw-cut expansion joints, "
+                f"no wood grain, no carpet fibers, no rugs, no decorative residential pattern. "
+                f"Captured strictly top-down orthographic, 2K resolution, sharp fine details. "
+                f"No lighting, no shadows, no perspective distortion, neutral white balance, evenly lit. "
+                f"The texture must tile seamlessly when repeated. Generic unbranded factory surface. "
+                f"No text, no watermark, no logo."
+            )
         style_name = _sanitize_style_name(style.get("style_name", "modern"))
         mood = _sanitize_description(style.get("mood", ""))
         return (
@@ -824,6 +881,15 @@ class StageTextureRunner:
         fm = self.floor_material
         mt = fm.get("material_type", "hardwood")
         bc = fm.get("base_color", [0.5, 0.35, 0.2])
+        if self._is_industrial_scene():
+            return (
+                f"Seamless tileable PBR albedo texture of plain industrial {mt} floor. "
+                f"Dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
+                f"Top-down orthographic, 2K resolution, sealed concrete or epoxy coating, "
+                f"fine anti-slip grain, subtle scuffs, no lighting, no shadows, no perspective distortion. "
+                f"The texture must tile seamlessly when repeated. No wood grain, no carpet, "
+                f"no decorative pattern, no text, no watermark, no logo."
+            )
         return (
             f"Seamless tileable PBR albedo texture of plain generic {mt} floor. "
             f"Dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
@@ -847,6 +913,8 @@ class StageTextureRunner:
         """
         if self.wall_intensity_override:
             return self.wall_intensity_override
+        if self._is_industrial_scene():
+            return "subtle"
         raw = (
             self.wall_material.get("wall_visual_intensity")
             or self.material_config.get("wall_visual_intensity")
@@ -864,6 +932,17 @@ class StageTextureRunner:
         finish = wm.get("finish", "matte")
         bc = wm.get("base_color", [0.95, 0.93, 0.9])
         intensity = self._wall_intensity()
+        if self._is_industrial_scene():
+            return (
+                f"Seamless tileable PBR albedo texture of a plain industrial wall, "
+                f"{mt} with {finish} finish, light grey utilitarian factory surface. "
+                f"Dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
+                f"Very subtle painted concrete or plaster grain, occasional fine pores, no decorative patterns, "
+                f"no wallpaper motifs, no wood panels, no mouldings, no residential ornament. "
+                f"Front-facing flat, orthographic, 2K resolution, no lighting, no shadows, "
+                f"neutral white balance. The texture must tile seamlessly when repeated. "
+                f"Generic unbranded industrial surface. No text, no watermark, no logo."
+            )
 
         # Subtle mode: plain wall. Drop description / style / mood entirely
         # (they tend to drag the model back toward motifs like "floral
@@ -931,6 +1010,19 @@ class StageTextureRunner:
         finish = wm.get("finish", "matte")
         bc = wm.get("base_color", [0.95, 0.93, 0.9])
         intensity = self._wall_intensity()
+        if self._is_industrial_scene():
+            ornament = (
+                "plain painted concrete or plaster, very faint natural wall grain, "
+                "no decorative patterns, no wallpaper motifs, no wood panels, "
+            )
+            return (
+                f"Seamless tileable PBR albedo texture of an industrial wall, "
+                f"{mt} with {finish} finish, {ornament}"
+                f"dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
+                f"Front-facing flat, orthographic, 2K resolution. No lighting, no shadows, "
+                f"no perspective distortion, neutral white balance. The texture must tile seamlessly when repeated. "
+                f"No text, no watermark, no logo, no signatures."
+            )
 
         if intensity == "subtle":
             ornament = (
@@ -963,6 +1055,15 @@ class StageTextureRunner:
         mt = wm.get("material_type", "paint")
         finish = wm.get("finish", "matte")
         bc = wm.get("base_color", [0.95, 0.93, 0.9])
+        if self._is_industrial_scene():
+            return (
+                f"Seamless tileable PBR albedo texture of a plain generic industrial wall, "
+                f"{mt} with {finish} finish, uniform painted concrete or plaster surface. "
+                f"Dominant color roughly RGB({bc[0]:.2f}, {bc[1]:.2f}, {bc[2]:.2f}) in linear space. "
+                f"Front-facing flat, orthographic, 2K resolution, no decorative patterns, "
+                f"no wallpaper, no wood paneling, no period style references, no lighting, no shadows. "
+                f"The texture must tile seamlessly when repeated. No text, no watermark, no logo."
+            )
         return (
             f"Seamless tileable PBR albedo texture of a plain generic interior wall, "
             f"{mt} with {finish} finish, uniform solid surface with only very subtle "
@@ -2096,6 +2197,7 @@ def apply_rug_textures():
             ],
             "texture_dir": os.path.abspath(self.images_dir),
             "model": self.texture_model,
+            "scene_type_info": self.scene_type_info,
             "generated_at": datetime.now().isoformat(),
         }
         mf_path = os.path.join(self.output_dir, "texture_manifest.json")
@@ -2120,6 +2222,7 @@ def apply_rug_textures():
                     "manifest_file": mf_path,
                     "texture_dir": os.path.abspath(self.images_dir),
                     "image_path": self.image_path,
+                    "scene_type_info": self.scene_type_info,
                 },
                 tags=["stage11_texture", "blender_code", "nanobanana", "textures"],
             )

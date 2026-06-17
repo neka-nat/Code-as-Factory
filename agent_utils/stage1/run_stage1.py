@@ -98,6 +98,7 @@ class Stage1Runner:
                 "confidence": 0.0,
                 "reasoning": "scene_classifier unavailable",
                 "lab_subtype": None,
+                "industrial_subtype": None,
                 "source": "fallback",
             }
 
@@ -106,7 +107,7 @@ class Stage1Runner:
 
         Routing:
           - lab (confidence >= 0.5)            -> Stage1_task_lab_addendum
-          - industrial (confidence >= 0.5)     -> no addendum (use base prompt)
+          - industrial (confidence >= 0.5)     -> Stage1_task_industrial_addendum
           - residential / office / retail / other / low-confidence lab
                                               -> Stage1_task_residential_addendum
         """
@@ -121,7 +122,9 @@ class Stage1Runner:
             subtype = scene_info.get("lab_subtype") or "general"
             route_label = f"lab (subtype={subtype}, confidence={confidence:.2f})"
         elif scene_type == "industrial" and confidence >= 0.5:
-            route_label = f"industrial (confidence={confidence:.2f}) - base prompt only"
+            addendum_name = "Stage1_task_industrial_addendum"
+            subtype = scene_info.get("industrial_subtype") or "general"
+            route_label = f"industrial (subtype={subtype}, confidence={confidence:.2f})"
         else:
             addendum_name = "Stage1_task_residential_addendum"
             route_label = (

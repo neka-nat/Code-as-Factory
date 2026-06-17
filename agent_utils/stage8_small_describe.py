@@ -182,6 +182,7 @@ class StageSmallDescribeRunner:
             else None
         )
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
 
         # Loaded data
         self.system_prompt: Optional[str] = None
@@ -192,6 +193,77 @@ class StageSmallDescribeRunner:
         # Output
         self.described: List[SmallItemDescribed] = []
         self._save_lock = threading.Lock()
+
+    # ---------------------------------------------------------------- scene type
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:
+            if self.verbose:
+                print(f"Stage8: cannot read scene_type ({exc}); using generic small-describe prompt")
+            return fallback
+
+    def _refresh_scene_type_from_payload(self, data: Dict[str, Any]) -> None:
+        summary = data.get("summary") if isinstance(data, dict) else None
+        info = None
+        if isinstance(summary, dict):
+            info = summary.get("scene_type_info")
+        if not info and isinstance(data, dict):
+            info = data.get("scene_type_info")
+        if isinstance(info, dict) and info.get("scene_type"):
+            self.scene_type_info = info
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_prompt_addendum(self) -> str:
+        if not self._is_industrial_scene():
+            return ""
+        subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+        return f"""
+
+===============================================================================
+INDUSTRIAL / FACTORY SMALL-OBJECT GUIDANCE
+===============================================================================
+Scene subtype: {subtype}
+If an item is on a workbench, inspection table, packing table, conveyor, pallet,
+or material rack, interpret it as a functional production object, not decor.
+
+Good industrial object_type examples:
+  "wrench", "screwdriver", "caliper", "dial gauge", "fixture", "jig",
+  "parts tray", "fastener cup", "small parts bin", "tote box", "carton",
+  "workpiece", "machined part", "label roll", "tape roll", "clipboard",
+  "tablet", "barcode scanner", "warning tag", "sample part".
+
+Industrial material/color bias:
+  powder-coated metal, stainless steel, anodized aluminum, black rubber,
+  polypropylene plastic, cardboard, safety yellow, emergency red, matte grey,
+  stainless silver, translucent plastic.
+
+Do not reinterpret factory items as residential decor: avoid vases, candles,
+plants, throw pillows, decorative bowls, framed photos, ornaments, or coffee-table objects.
+"""
+
+    def _apply_scene_prompt_addendum(self) -> None:
+        if not self.system_prompt:
+            return
+        marker = "INDUSTRIAL / FACTORY SMALL-OBJECT GUIDANCE"
+        if self._is_industrial_scene() and marker not in self.system_prompt:
+            self.system_prompt += self._industrial_prompt_addendum()
 
     # ------------------------------------------------------------------ logging
     def _log(self, msg: str, level: str = "info"):
@@ -288,6 +360,7 @@ class StageSmallDescribeRunner:
             )
             return False
 
+        self._refresh_scene_type_from_payload(data if isinstance(data, dict) else {})
         raw_items = data.get("items", []) if isinstance(data, dict) else []
         self.items = [SmallItemInput.from_dict(it) for it in raw_items]
         self._log(f"Loaded {len(self.items)} small items", "success")
@@ -430,9 +503,17 @@ class StageSmallDescribeRunner:
         items_text = json.dumps(
             self._items_payload(batch), ensure_ascii=False, indent=2
         )
+        scene_context = ""
+        if self._is_industrial_scene():
+            scene_context = (
+                "scene_context:\n"
+                + json.dumps(self.scene_type_info, ensure_ascii=False, indent=2)
+                + "\n\n"
+            )
         user_text = (
             "room_style:\n"
             f"{room_style_text}\n\n"
+            f"{scene_context}"
             "small_items_batch:\n"
             f"{items_text}\n\n"
             "Return JSON only. One entry per item, keyed by 'small_objects'."
@@ -602,6 +683,7 @@ class StageSmallDescribeRunner:
                     1 for d in self.described if d.should_detail
                 ),
                 "image_path": self.image_path,
+                "scene_type_info": self.scene_type_info,
                 "generated_at": datetime.now().isoformat(),
             },
         }
@@ -621,6 +703,7 @@ class StageSmallDescribeRunner:
                     "output_file": out_path,
                     "image_path": self.image_path,
                     "total_items": len(self.described),
+                    "scene_type_info": self.scene_type_info,
                 },
                 tags=["stage8_small_describe", "small_objects",
                       "object_description"],
@@ -637,6 +720,7 @@ class StageSmallDescribeRunner:
             return False, {}
         if not self._load_small_objects_json():
             return False, {}
+        self._apply_scene_prompt_addendum()
         self._load_image_path()
         if not self.image_path or not os.path.exists(self.image_path):
             self._log(

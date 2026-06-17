@@ -31,8 +31,10 @@ ALLOWED scene_type VALUES (pick exactly one)
                   hallway / studio apartment.
 - "office"      : home office, corporate office, study room dominated by a
                   single desk + office chair + bookshelf; no lab equipment.
-- "industrial"  : warehouse, factory floor, server room, machine shop, garage
-                  workshop. Heavy machinery, no lab glassware.
+- "industrial"  : warehouse, factory floor, assembly line, robot cell,
+                  machine shop, server room, garage workshop. Heavy machinery,
+                  conveyors, pallet racks, control cabinets, safety fencing,
+                  industrial equipment, no lab glassware.
 - "retail"      : shop, store, showroom, gallery, café, restaurant.
 - "other"       : anything that doesn't clearly fit above.
 
@@ -47,17 +49,29 @@ DECISION HEURISTIC
 4. If the room has bed / sofa / TV / kitchen counter / shower → "residential".
 5. If the room has a single desk + chair + bookshelf and no lab cues →
    "office".
-6. If the room shows machinery / forklifts / pallets / server racks →
+6. If the room shows machinery / conveyors / robot arms / forklifts /
+   pallets / pallet racks / control cabinets / server racks / safety fencing →
    "industrial".
 7. If the room is a shop / café / showroom → "retail".
 8. Otherwise → "other".
+
+INDUSTRIAL SUBTYPE GUIDANCE
+- "factory_floor": mixed manufacturing area with several machines/workcells.
+- "machine_shop": CNC machines, lathes, mills, tooling cabinets, chip bins.
+- "assembly_line": conveyors, stations in sequence, operators/fixtures.
+- "robot_cell": robot arm, end effector, safety fence, cell controller.
+- "warehouse": pallet racks, pallet staging, forklifts/AGVs, loading/storage aisles.
+- "server_room": rows of server racks, cable trays, cooling units.
+- "garage_workshop": vehicle bay, lift, tools, workbench.
+- "general": industrial scene but subtype is not clear.
 
 OUTPUT JSON SCHEMA (return EXACTLY this structure)
 {
   "scene_type": "lab",
   "confidence": 0.0,
   "reasoning": "short one-sentence justification grounded in visible cues",
-  "lab_subtype": null
+  "lab_subtype": null,
+  "industrial_subtype": null
 }
 
 Field rules:
@@ -68,6 +82,11 @@ Field rules:
 - "lab_subtype": ONLY when scene_type == "lab". One of:
                    "wet_chemistry" | "biology" | "pharma_gmp" | "physics" |
                    "optics_laser" | "metrology" | "electronics" | "general"
+                 Otherwise MUST be null.
+- "industrial_subtype": ONLY when scene_type == "industrial". One of:
+                   "factory_floor" | "machine_shop" | "assembly_line" |
+                   "robot_cell" | "warehouse" | "server_room" |
+                   "garage_workshop" | "general"
                  Otherwise MUST be null.
 
 [RUNTIME INPUT]

@@ -1,0 +1,138 @@
+[STAGE 3 - INDUSTRIAL / FACTORY-SPECIFIC ADDENDUM]
+
+This addendum is appended to the Stage 3 base system prompt ONLY when the
+scene was classified as "industrial". It overrides residential furniture
+fallbacks where they conflict and adds factory equipment geometry rules.
+
+==============================================================================
+A. INDUSTRIAL STANDARD DIMENSIONS
+==============================================================================
+Use these dimensions when Stage 1/2 labels or hints match. Pick the final size
+from the reference image and Stage 1 scale; these are realistic defaults.
+
+| Object Type                         | Dimensions (W x D x H)              |
+|-------------------------------------|-------------------------------------|
+| CNC / machining center              | 2.8 m x 2.0 m x 2.2 m               |
+| Lathe / milling machine             | 2.4 m x 1.1 m x 1.7 m               |
+| Press / injection molding machine   | 4.0 m x 2.0 m x 2.5 m               |
+| Conveyor segment                    | 4.0-8.0 m x 0.8 m x 0.9 m           |
+| Industrial robot arm cell envelope  | 4.0 m x 4.0 m x 2.2 m               |
+| Robot pedestal + arm                | 0.8 m x 0.8 m x 1.8 m               |
+| Safety fence / guard panel          | variable x 0.06 m x 1.8 m           |
+| Workbench / assembly bench          | 1.8-2.4 m x 0.8 m x 0.9 m           |
+| Inspection table                    | 1.5-2.0 m x 0.8 m x 0.9 m           |
+| Pallet rack bay                     | 2.7 m x 1.1 m x 2.5 m               |
+| Pallet                              | 1.2 m x 1.0 m x 0.15 m              |
+| Parts bin rack                      | 1.2 m x 0.5 m x 1.6 m               |
+| Tool cabinet                        | 0.9 m x 0.6 m x 1.2 m               |
+| Control/electrical cabinet          | 1.0 m x 0.5 m x 2.0 m               |
+| Server rack                         | 0.6 m x 1.0 m x 2.0 m               |
+
+==============================================================================
+B. INDUSTRIAL MATERIAL COLORS
+==============================================================================
+Create clear factory materials before objects and use them consistently:
+- Machine painted metal:      (0.55, 0.58, 0.58, 1.0) or off-white/grey
+- Dark machine enclosure:     (0.12, 0.14, 0.16, 1.0)
+- Stainless/brushed metal:    (0.72, 0.74, 0.76, 1.0)
+- Conveyor belt rubber:       (0.03, 0.03, 0.03, 1.0)
+- Safety yellow:              (1.0, 0.75, 0.05, 1.0)
+- Emergency red:              (0.9, 0.05, 0.03, 1.0)
+- Industrial floor concrete:  (0.45, 0.46, 0.44, 1.0)
+- Epoxy floor light grey:     (0.62, 0.64, 0.62, 1.0)
+
+Do not use hardwood/fabric/rug materials for factory floors or machines unless
+the reference image clearly shows a non-factory object.
+
+==============================================================================
+C. COMPOSITE GEOMETRY RULES
+==============================================================================
+
+C.0 HARD RULE - DIRECT CREATE CALLS
+Do NOT define helper functions for these composites. Emit top-level
+`create_box(...)` / `create_cylinder(...)` calls directly inside
+`run_layout_engine()` with literal object names. Downstream parsers recognize
+literal create calls much more reliably than helper bodies or generated names.
+
+C.1 ENCLOSED MACHINE / CNC
+For `structure_hint == "enclosed_machine"` or labels like CNC, machining
+center, press, molding machine:
+- Use a large base/enclosure box matching the footprint.
+- Add a slightly darker front door/window panel as a thin box on the operator
+  side when visible.
+- Add a control panel box mounted on the front/right side.
+- Add small indicator/emergency-stop boxes only if they are attached to the
+  machine, not loose tabletop items.
+- Keep the machine as a machine; do not substitute wardrobe/cabinet geometry.
+
+C.2 CONVEYOR LINE
+For `structure_hint == "conveyor_line"` or labels like conveyor/assembly line:
+- Long axis follows the image line direction.
+- Emit belt as a long dark thin box at z ~0.9 m.
+- Emit frame below belt as metal rails/legs.
+- Optional rollers: a few evenly spaced cylinders or narrow boxes, not dozens.
+- If a conveyor turns a corner, use separate straight segments with distinct
+  names rather than one diagonal blob.
+
+C.3 ROBOT CELL
+For `structure_hint == "robot_cell"` or visible robot arm/safety fence:
+- Robot pedestal: box/cylinder base at floor.
+- Arm: 2-3 cylinders/boxes for links, visually raised above pedestal.
+- End effector: small box/cylinder at arm tip.
+- Safety fence: thin yellow/grey panels or posts around the cell perimeter,
+  leaving a gate/opening if visible.
+- Control cabinet: separate cabinet near the cell if Stage 1 lists it.
+- Keep all cell pieces inside the room and leave operator/material aisles.
+
+C.4 PALLET RACK / STORAGE RACK
+For `structure_hint == "pallet_rack"` or pallet/parts rack labels:
+- Use vertical uprights at corners.
+- Use horizontal beams/shelves as thin boxes.
+- Leave rack interior open; do not make it a single solid cabinet.
+- Pallets/bins on the rack may be simple boxes if Stage 1 lists them.
+
+C.5 CONTROL CABINET / ELECTRICAL PANEL
+For `structure_hint == "control_cabinet"` or control/electrical cabinet labels:
+- Tall thin cabinet body.
+- Front door seam/panel as a thin box.
+- Small indicator lights/buttons on the front if visible.
+- Place against wall or near machine according to Stage 2/image.
+
+C.6 SAFETY FENCE / GUARD RAIL
+For `structure_hint == "safety_fence"` or labels like safety fence/guard rail:
+- Model as thin posts and rails/panels, not a thick solid wall.
+- Height around 1.6-2.0 m.
+- Use safety yellow or grey metal.
+- Do not block doorways/material paths that are visible in the image.
+
+C.7 WORKBENCH / INSPECTION TABLE
+For industrial benches/tables:
+- Top slab at z ~0.9 m.
+- Metal legs/frame below.
+- Do NOT generate loose tools, parts, bins, clipboards, or workpieces as part
+  of the bench body. Those are separate small objects handled later.
+
+==============================================================================
+D. PLACEMENT RULES
+==============================================================================
+- Use the reference image as source of truth for positions and long-axis
+  orientation.
+- Preserve clear aisles. Do not push machines into each other to fill space.
+- Wall-side machines/cabinets should touch or nearly touch the wall, with their
+  service/operator side facing the aisle.
+- Conveyors and assembly lines should align in rows/columns visible in the image.
+- Pallet racks usually sit along walls or in parallel rows with wide aisles.
+- Safety fences wrap around hazardous machines/robots; they are not decorative
+  room partitions.
+
+==============================================================================
+E. POST-WRITE CHECKLIST
+==============================================================================
+Before returning the script:
+- Major factory items are not represented as residential furniture.
+- Every new object has a material.
+- Machine/conveyor/rack dimensions match Stage 1 scale and visible footprint.
+- Long equipment axes match the top-down image.
+- Aisles remain usable and objects stay inside room bounds.
+- No rugs, pillows, plants, candles, or decorative residential clutter were
+  invented for an industrial scene.

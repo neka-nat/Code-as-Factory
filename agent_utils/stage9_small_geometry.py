@@ -189,6 +189,7 @@ class StageSmallGeometryRunner:
             else None
         )
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
 
         # Loaded state
         self.system_prompt: Optional[str] = None
@@ -199,6 +200,80 @@ class StageSmallGeometryRunner:
         self.progress_path = os.path.join(
             self.output_dir, "small_geometry_progress.json"
         )
+
+    # ---------------------------------------------------------------- scene type
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:
+            if self.verbose:
+                print(f"Stage9: cannot read scene_type ({exc}); using generic small-geometry prompt")
+            return fallback
+
+    def _refresh_scene_type_from_payload(self, data: Dict[str, Any]) -> None:
+        summary = data.get("summary") if isinstance(data, dict) else None
+        info = None
+        if isinstance(summary, dict):
+            info = summary.get("scene_type_info")
+        if not info and isinstance(data, dict):
+            info = data.get("scene_type_info")
+        if isinstance(info, dict) and info.get("scene_type"):
+            self.scene_type_info = info
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_prompt_addendum(self) -> str:
+        if not self._is_industrial_scene():
+            return ""
+        subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+        return f"""
+
+===============================================================================
+INDUSTRIAL / FACTORY SMALL-GEOMETRY ADDENDUM
+===============================================================================
+Scene subtype: {subtype}
+For factory-floor small objects, keep geometry functional, low-detail, and inside
+bbox. Use at most 5 parts.
+
+Useful templates:
+- wrench / spanner: 1 slim handle box or cylinder + 1 small open head box/cylinder.
+- screwdriver: 1 horizontal cylinder shaft + 1 handle cylinder/box.
+- caliper: 1 thin beam box + 2 jaw boxes + optional small slider box.
+- gauge / dial gauge: 1 small cylinder face + 1 stem cylinder + optional base.
+- parts tray / fastener cup: shallow box or cylinder with thin rim.
+- small parts bin / tote box: open rectangular box, front lip, optional label panel.
+- carton: one box with thin top flap or tape strip.
+- label roll / tape roll: short cylinder ring/disc.
+- clipboard / tablet: thin rectangular slab, optional clip/bezel.
+- barcode scanner: handle box/cylinder + angled head box.
+- workpiece / machined part: simple metal block/cylinder with one distinguishing cut/slot if space allows.
+- jig / fixture: base plate + clamp blocks/posts, no loose tools attached.
+
+Avoid decorative residential geometry such as candles, vases, plants, pillows,
+photo frames, ornaments, and bowls in industrial scenes.
+"""
+
+    def _apply_scene_prompt_addendum(self) -> None:
+        if not self.system_prompt:
+            return
+        marker = "INDUSTRIAL / FACTORY SMALL-GEOMETRY ADDENDUM"
+        if self._is_industrial_scene() and marker not in self.system_prompt:
+            self.system_prompt += self._industrial_prompt_addendum()
 
     # -------------------------------------------------------------------- log
     def _log(self, msg: str, level: str = "info"):
@@ -285,6 +360,7 @@ class StageSmallGeometryRunner:
             return False
 
         self.describe_payload = data
+        self._refresh_scene_type_from_payload(data if isinstance(data, dict) else {})
         return True
 
     def _load_base_code(self) -> bool:
@@ -419,6 +495,8 @@ class StageSmallGeometryRunner:
             "part_hierarchy_hint": it.part_hierarchy_hint,
             "parent_name": it.parent_name,
         }
+        if self._is_industrial_scene():
+            payload["scene_context"] = self.scene_type_info
         return (
             "item:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
@@ -666,6 +744,7 @@ class StageSmallGeometryRunner:
             return False, {}
         if not self._load_describe():
             return False, {}
+        self._apply_scene_prompt_addendum()
         if not self._load_base_code():
             return False, {}
 

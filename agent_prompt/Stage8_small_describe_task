@@ -136,6 +136,25 @@ INTERPRETATION GUIDELINES
   description text; the geometry stage already has those.
 
 ==============================================================================
+INDUSTRIAL / FACTORY SMALL-OBJECT INTERPRETATION
+==============================================================================
+If runtime input includes scene_context.scene_type == "industrial", interpret items
+on workbenches, conveyors, pallets, and racks as production objects rather than
+residential decor.
+
+Good industrial object_type examples:
+  "wrench", "screwdriver", "caliper", "dial gauge", "fixture", "jig",
+  "parts tray", "fastener cup", "small parts bin", "tote box", "carton",
+  "workpiece", "machined part", "label roll", "tape roll", "clipboard",
+  "tablet", "barcode scanner", "warning tag".
+
+Use industrial materials and colors when ambiguous: powder-coated metal,
+stainless steel, anodized aluminum, black rubber, polypropylene plastic,
+cardboard, safety yellow, emergency red, matte grey, stainless silver.
+Do not convert factory items into vases, candles, plants, pillows, decorative
+bowls, framed photos, ornaments, or other residential props.
+
+==============================================================================
 FINAL CHECKLIST (run mentally before returning)
 ==============================================================================
 - JSON parses with no trailing characters and no comments.

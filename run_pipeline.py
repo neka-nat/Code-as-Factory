@@ -183,13 +183,52 @@ _FURNITURE_FOOTPRINT_M2: List[Tuple[Tuple[str, ...], float]] = [
 ]
 
 
+# Approximate floor footprint in m2 for industrial major floor equipment.
+# These are intentionally conservative but much larger than residential
+# furniture defaults, because factory scenes need service aisles, safety
+# envelopes, and operator clearance around equipment.
+_INDUSTRIAL_FOOTPRINT_M2: List[Tuple[Tuple[str, ...], float]] = [
+    (("robot cell", "robotic cell", "robot arm cell", "cobot cell"), 18.0),
+    (("industrial robot", "robot arm", "cobot", "robot pedestal"), 8.0),
+    (("safety fence", "guard fence", "machine guard", "safety cage"), 6.0),
+    (("assembly line", "production line", "conveyor line"), 18.0),
+    (("conveyor", "belt conveyor", "roller conveyor"), 8.0),
+    (("cnc", "machining center", "machine center"), 10.0),
+    (("lathe", "milling machine", "mill", "grinder"), 7.0),
+    (("press brake", "hydraulic press", "stamping press", "press machine"), 9.0),
+    (("injection molding", "molding machine"), 14.0),
+    (("laser cutter", "plasma cutter", "waterjet", "cutting table"), 10.0),
+    (("3d printer", "additive machine"), 4.0),
+    (("inspection station", "inspection table", "quality station", "metrology table"), 4.0),
+    (("workbench", "work table", "assembly bench", "packing table"), 3.0),
+    (("pallet rack", "storage rack", "parts rack", "shelving rack"), 4.0),
+    (("pallet", "material pallet", "staging pallet"), 2.0),
+    (("parts bin", "bin rack", "cart", "trolley"), 1.5),
+    (("tool cabinet", "tool chest", "tool rack"), 1.5),
+    (("control cabinet", "electrical cabinet", "control panel", "switchgear"), 1.4),
+    (("compressor", "pump", "utility skid", "air tank"), 3.0),
+    (("forklift", "agv", "automated guided vehicle"), 5.0),
+    (("server rack", "rack row", "cooling unit"), 2.0),
+]
+
+
+
 def _major_floor_footprint(name: str) -> float:
     """Best-effort floor footprint in m² for a major-floor object given its name."""
     n = (name or "").lower()
     for keys, m2 in _FURNITURE_FOOTPRINT_M2:
         if any(k in n for k in keys):
             return m2
-    return 1.0  # unknown major-floor object → modest default
+    return 1.0  # unknown major-floor object -> modest default
+
+
+def _industrial_floor_footprint(name: str) -> float:
+    """Best-effort footprint in m² for industrial equipment or storage."""
+    n = (name or "").lower()
+    for keys, m2 in _INDUSTRIAL_FOOTPRINT_M2:
+        if any(k in n for k in keys):
+            return m2
+    return 3.0  # unknown factory equipment needs more room than furniture
 
 
 def _parse_dim_string(s: Any) -> Tuple[Optional[float], Optional[float]]:
@@ -215,6 +254,7 @@ def _format_dim_string(w: float, d: float) -> str:
 
 def _compute_scale_audit(
     result: dict,
+    scene_type: str = "other",
     packing_factor: float = 0.35,
     min_objects_for_check: int = 3,
     hard_floor_area_m2: float = 6.0,
@@ -236,7 +276,20 @@ def _compute_scale_audit(
         - should_rescale=False ⇒ second element may be None or original pair;
           audit_dict still describes what we computed (for logging).
     """
+    scene_type_norm = (scene_type or "other").strip().lower()
+    if scene_type_norm == "industrial":
+        if packing_factor == 0.35:
+            packing_factor = 0.45
+        if min_objects_for_check == 3:
+            min_objects_for_check = 1
+        if hard_floor_area_m2 == 6.0:
+            hard_floor_area_m2 = 25.0
+
     audit: Dict[str, Any] = {
+        "scene_type": scene_type_norm,
+        "footprint_profile": (
+            "industrial_equipment" if scene_type_norm == "industrial" else "furniture"
+        ),
         "packing_factor": packing_factor,
         "min_objects_for_check": min_objects_for_check,
     }
@@ -254,7 +307,16 @@ def _compute_scale_audit(
         for obj in zone.get("object_hierarchy", []) or []:
             if (obj.get("category") == "major"
                     and obj.get("placement_type") == "floor"):
-                major_floor_names.append(obj.get("name") or "")
+                if scene_type_norm == "industrial":
+                    major_floor_names.append(" ".join(
+                        str(v) for v in (
+                            obj.get("name"),
+                            obj.get("industrial_role"),
+                            obj.get("structure_hint"),
+                        ) if v
+                    ))
+                else:
+                    major_floor_names.append(obj.get("name") or "")
 
     n_objects = len(major_floor_names)
     audit["n_major_floor_objects"] = n_objects
@@ -262,7 +324,12 @@ def _compute_scale_audit(
         audit["skipped"] = f"only {n_objects} major floor objects (< {min_objects_for_check})"
         return False, None, audit
 
-    total_footprint = sum(_major_floor_footprint(n) for n in major_floor_names)
+    footprint_fn = (
+        _industrial_floor_footprint
+        if scene_type_norm == "industrial"
+        else _major_floor_footprint
+    )
+    total_footprint = sum(footprint_fn(n) for n in major_floor_names)
     min_area = max(total_footprint / packing_factor, hard_floor_area_m2)
     audit["estimated_total_footprint_m2"] = round(total_footprint, 2)
     audit["min_required_area_m2"] = round(min_area, 2)
@@ -292,7 +359,7 @@ def _compute_scale_audit(
         audit["scale_factor"] = round(scale, 3)
         audit["reason"] = (
             f"current {W:.1f}m × {D:.1f}m = {cur_area:.1f} m² is below "
-            f"furniture-density min {min_area:.1f} m² ({n_objects} major floor "
+            f"{audit['footprint_profile']} min {min_area:.1f} m² ({n_objects} major floor "
             f"objects, footprint {total_footprint:.1f} m²); scaled by {scale:.2f}×"
         )
 
@@ -1000,7 +1067,13 @@ class UnifiedPipeline:
         `stage1_output.json`, and prints an audit warning. Returns True iff
         a rescale happened.
         """
-        should_rescale, new_dims, audit = _compute_scale_audit(result)
+        scene_type = (
+            (self.results.get("scene_classify") or {}).get("scene_type")
+            or "other"
+        )
+        should_rescale, new_dims, audit = _compute_scale_audit(
+            result, scene_type=scene_type
+        )
         if not should_rescale or not new_dims:
             if audit.get("skipped") and self.config.verbose:
                 self._log(f"Stage 1 scale check: {audit['skipped']}", "info")
@@ -1042,16 +1115,17 @@ class UnifiedPipeline:
             self._log(f"Stage 1 rescale: file rewrite skipped ({e})", "warning")
 
         # Upper-bound warning (do not auto-shrink — let user review)
-        if new_W > 14 or new_D > 14:
+        upper_bound_m = 30 if scene_type == "industrial" else 14
+        if new_W > upper_bound_m or new_D > upper_bound_m:
             self._log(
-                f"Stage 1 dimension > 14 m after rescale: {new_W:.1f} × "
-                f"{new_D:.1f} m — please review",
+                f"Stage 1 dimension > {upper_bound_m} m after rescale: {new_W:.1f} x "
+                f"{new_D:.1f} m - please review",
                 "warning",
             )
 
         self._log(
-            f"📏 Stage 1 scale auto-rescaled: "
-            f"{audit.get('original_dimensions')!r} → {new_dims_str!r}",
+            f"Stage 1 scale auto-rescaled: "
+            f"{audit.get('original_dimensions')!r} -> {new_dims_str!r}",
             "warning",
         )
         self._log(f"    reason: {audit.get('reason')}", "info")
@@ -2568,7 +2642,7 @@ Recommended flow: Stage 1-4 → Stage 5-12
     parser.add_argument(
         "--scene-type", type=str, default=None,
         choices=["lab", "residential", "office", "industrial", "retail", "other"],
-        help="Manually set scene type and skip automatic classification (e.g. lab forces the lab prompt variant)",
+        help="Manually set scene type and skip automatic classification (e.g. lab or industrial forces the matching prompt variant)",
     )
     parser.add_argument(
         "--scene-classify-model", type=str, default=None,

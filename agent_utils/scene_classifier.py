@@ -15,6 +15,9 @@ Output contract (written to Memory + returned dict):
   "reasoning": "<<=30 words>",
   "lab_subtype": "wet_chemistry" | "biology" | "pharma_gmp" | "physics" |
                  "optics_laser" | "metrology" | "electronics" | "general" | None,
+  "industrial_subtype": "factory_floor" | "machine_shop" | "assembly_line" |
+                        "robot_cell" | "warehouse" | "server_room" |
+                        "garage_workshop" | "general" | None,
   "source": "heuristic" | "llm" | "manual" | "fallback"
 }
 
@@ -43,6 +46,10 @@ ALLOWED_LAB_SUBTYPES = {
     "wet_chemistry", "biology", "pharma_gmp", "physics",
     "optics_laser", "metrology", "electronics", "general"
 }
+ALLOWED_INDUSTRIAL_SUBTYPES = {
+    "factory_floor", "machine_shop", "assembly_line", "robot_cell",
+    "warehouse", "server_room", "garage_workshop", "general"
+}
 
 LAB_FILENAME_KEYWORDS = (
     "lab", "laboratory", "labs",
@@ -62,7 +69,9 @@ OFFICE_FILENAME_KEYWORDS = (
 )
 INDUSTRIAL_FILENAME_KEYWORDS = (
     "warehouse", "factory", "industrial", "machine_shop", "garage",
-    "server_room",
+    "server_room", "assembly_line", "assembly", "robot_cell", "robotic_cell",
+    "cnc", "machining", "manufacturing", "production_line", "conveyor",
+    "pallet_rack", "pallet", "workshop",
 )
 RETAIL_FILENAME_KEYWORDS = (
     "shop", "store", "showroom", "gallery", "cafe", "café", "restaurant",
@@ -105,31 +114,47 @@ def _heuristic_from_filename(image_path: str) -> Optional[Dict[str, Any]]:
             "confidence": 0.9,
             "reasoning": f"filename hits lab keywords (stem={stem!r})",
             "lab_subtype": subtype,
+            "industrial_subtype": None,
             "source": "heuristic",
         }
     if _hit(RESIDENTIAL_FILENAME_KEYWORDS):
         return {
             "scene_type": "residential", "confidence": 0.85,
             "reasoning": f"filename hits residential keywords (stem={stem!r})",
-            "lab_subtype": None, "source": "heuristic",
+            "lab_subtype": None, "industrial_subtype": None, "source": "heuristic",
         }
     if _hit(OFFICE_FILENAME_KEYWORDS):
         return {
             "scene_type": "office", "confidence": 0.8,
             "reasoning": f"filename hits office keywords (stem={stem!r})",
-            "lab_subtype": None, "source": "heuristic",
+            "lab_subtype": None, "industrial_subtype": None, "source": "heuristic",
         }
     if _hit(INDUSTRIAL_FILENAME_KEYWORDS):
+        subtype = "general"
+        if "server" in stem:
+            subtype = "server_room"
+        elif "warehouse" in stem or "pallet" in stem:
+            subtype = "warehouse"
+        elif "robot" in stem:
+            subtype = "robot_cell"
+        elif "assembly" in stem or "production_line" in stem or "conveyor" in stem:
+            subtype = "assembly_line"
+        elif "machine" in stem or "machining" in stem or "cnc" in stem:
+            subtype = "machine_shop"
+        elif "garage" in stem or "workshop" in stem:
+            subtype = "garage_workshop"
+        elif "factory" in stem or "manufacturing" in stem or "industrial" in stem:
+            subtype = "factory_floor"
         return {
             "scene_type": "industrial", "confidence": 0.8,
             "reasoning": f"filename hits industrial keywords (stem={stem!r})",
-            "lab_subtype": None, "source": "heuristic",
+            "lab_subtype": None, "industrial_subtype": subtype, "source": "heuristic",
         }
     if _hit(RETAIL_FILENAME_KEYWORDS):
         return {
             "scene_type": "retail", "confidence": 0.8,
             "reasoning": f"filename hits retail keywords (stem={stem!r})",
-            "lab_subtype": None, "source": "heuristic",
+            "lab_subtype": None, "industrial_subtype": None, "source": "heuristic",
         }
     return None
 
@@ -248,12 +273,22 @@ def _llm_classify(
             lab_subtype = "general"
     else:
         lab_subtype = None
+    industrial_subtype = parsed.get("industrial_subtype")
+    if scene_type == "industrial":
+        if (
+            not isinstance(industrial_subtype, str)
+            or industrial_subtype not in ALLOWED_INDUSTRIAL_SUBTYPES
+        ):
+            industrial_subtype = "general"
+    else:
+        industrial_subtype = None
 
     return {
         "scene_type": scene_type,
         "confidence": confidence,
         "reasoning": reasoning,
         "lab_subtype": lab_subtype,
+        "industrial_subtype": industrial_subtype,
         "source": "llm",
     }
 
@@ -299,6 +334,7 @@ def classify_scene(
                 "confidence": 1.0,
                 "reasoning": "manual override via CLI / API",
                 "lab_subtype": "general" if st == "lab" else None,
+                "industrial_subtype": "general" if st == "industrial" else None,
                 "source": "manual",
             }
             _log(f"using manually specified scene_type={st}")
@@ -331,6 +367,7 @@ def classify_scene(
             "confidence": 0.0,
             "reasoning": "all classification paths failed; falling back to 'other'",
             "lab_subtype": None,
+            "industrial_subtype": None,
             "source": "fallback",
         }
         _log("classification failed, using fallback scene_type=other")
@@ -365,6 +402,7 @@ def read_scene_type(memory) -> Dict[str, Any]:
         "confidence": 0.0,
         "reasoning": "no scene_type in memory",
         "lab_subtype": None,
+        "industrial_subtype": None,
         "source": "fallback",
     }
     if memory is None:
@@ -386,6 +424,7 @@ def read_scene_type(memory) -> Dict[str, Any]:
         "confidence": float(content.get("confidence", 0.0) or 0.0),
         "reasoning": str(content.get("reasoning", "") or ""),
         "lab_subtype": content.get("lab_subtype"),
+        "industrial_subtype": content.get("industrial_subtype"),
         "source": str(content.get("source", "unknown")),
     }
 
@@ -402,4 +441,5 @@ __all__ = [
     "is_lab",
     "ALLOWED_SCENE_TYPES",
     "ALLOWED_LAB_SUBTYPES",
+    "ALLOWED_INDUSTRIAL_SUBTYPES",
 ]

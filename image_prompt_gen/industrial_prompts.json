@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "purpose": "industrial factory test images"
+  },
+  "prompts": [
+    {
+      "id": 1,
+      "params": {
+        "room_type": "factory floor",
+        "style": "industrial_test"
+      },
+      "prompt": "Top-down orthographic view of a manufacturing factory floor, camera at 90 degrees straight down. Complete rectangular indoor facility visible, all perimeter walls shown, plain white background. Include 2 CNC machining centers, one belt conveyor, one robot arm cell with yellow safety fence, pallet rack, tool cabinets, control cabinet, workbench with parts bins, clear walking aisles and safety zones. Sealed concrete floor, grey painted metal machines, black rubber conveyor belt, safety yellow guards, red emergency stop buttons. Photorealistic, flat overhead view, no perspective, no isometric, no text, no labels, no arrows, no watermarks."
+    }
+  ]
+}

@@ -349,6 +349,40 @@ Force a scene type:
 ```bash
 python run_pipeline.py --image example/example1.png --scene-type lab
 python run_pipeline.py --image example/example1.png --scene-type residential
+python run_pipeline.py --image path/to/factory_floor.png --scene-type industrial
+```
+
+## Industrial / Factory Scenes
+
+The pipeline can route manufacturing and warehouse-like top-down images through
+industrial-specific prompt and validation branches. Automatic scene
+classification detects filenames and images containing cues such as `factory`,
+`warehouse`, `cnc`, `assembly_line`, `robot_cell`, `conveyor`, or `pallet_rack`.
+Use `--scene-type industrial` when you want to force this route.
+
+Industrial routing changes the pipeline behavior end to end:
+
+- Stage 1 and Stage 3 use factory-oriented addenda for scale, equipment
+  semantics, aisles, safety zones, conveyors, racks, machine enclosures, robot
+  cells, and control cabinets.
+- The Stage 1 scale audit uses larger industrial equipment footprints and will
+  expand undersized scenes more aggressively than residential rooms.
+- Stage 5 and Stage 6 preserve machine, storage, safety, and material-flow
+  semantics instead of converting them into residential furniture.
+- Stage 7 through Stage 9 only add functional small objects on valid work or
+  material surfaces, such as tools, fixtures, bins, trays, workpieces, labels,
+  pallets, and inspection equipment.
+- Stage 10 through Stage 12 bias materials, textures, and lighting toward
+  concrete/epoxy floors, painted or powder-coated metal, safety colors, rubber
+  belts, plastic bins, and bright overhead work lighting.
+
+For detailed small factory objects, combine it with `--detail-small-objects`:
+
+```bash
+python run_pipeline.py \
+  --image path/to/factory_floor.png \
+  --scene-type industrial \
+  --detail-small-objects
 ```
 
 ## Batch Runs

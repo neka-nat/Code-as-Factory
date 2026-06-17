@@ -109,9 +109,9 @@ class Stage3Runner:
 
         Reads the scene_type record produced by `scene_classifier` (run as
         Stage 0 in unified_pipeline) from Memory. When the scene is a lab
-        with confidence >= 0.5, appends `Stage3_lab_addendum`. Falls back
-        silently to the unmodified base prompt on any failure so the
-        production path is never broken.
+        or industrial space with confidence >= 0.5, appends the matching
+        scene addendum. Falls back silently to the unmodified base prompt on
+        any failure so the production path is never broken.
         """
         try:
             from scene_classifier import read_scene_type  # type: ignore
@@ -132,6 +132,20 @@ class Stage3Runner:
             subtype = info.get("lab_subtype") or "general"
             self._log(
                 f"Stage3: routing to lab prompt variant (subtype={subtype}, "
+                f"confidence={confidence:.2f})",
+                "info",
+            )
+            return base_prompt.rstrip() + "\n\n" + addendum.lstrip()
+
+        if scene_type == "industrial" and confidence >= 0.5:
+            try:
+                addendum = self.prompts.get("Stage3_industrial_addendum")
+            except Exception as exc:
+                self._log(f"Stage3: failed to load industrial addendum ({exc}); using base prompt", "warning")
+                return base_prompt
+            subtype = info.get("industrial_subtype") or "general"
+            self._log(
+                f"Stage3: routing to industrial prompt variant (subtype={subtype}, "
                 f"confidence={confidence:.2f})",
                 "info",
             )

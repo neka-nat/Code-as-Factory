@@ -104,6 +104,25 @@ COMMON SMALL-OBJECT TEMPLATES (BIAS — NOT MANDATORY)
 - Lab mat / wipe / pad:      1 thin box.
 
 ==============================================================================
+INDUSTRIAL / FACTORY SMALL-OBJECT TEMPLATES
+==============================================================================
+When runtime item.scene_context.scene_type == "industrial" or the object_type is a
+factory-floor item, use simple functional templates and keep within <=5 parts:
+- wrench / spanner: slim handle + small open head.
+- screwdriver: horizontal shaft + handle.
+- caliper: thin beam + two jaws + optional slider.
+- dial gauge: cylinder face + stem + optional base.
+- parts tray / fastener cup: shallow open box/cylinder with rim.
+- small parts bin / tote box: open rectangular bin + front lip / label panel.
+- carton: box + thin flap or tape strip.
+- label roll / tape roll: short cylinder disc/ring.
+- clipboard / tablet: thin rectangular slab + clip/bezel.
+- barcode scanner: handle + angled head.
+- workpiece / machined part: simple metal block/cylinder, optional slot/cut.
+- jig / fixture: base plate + clamp blocks/posts.
+Avoid residential decorative geometry in industrial scenes.
+
+==============================================================================
 SIZE / DETAIL FLOOR
 ==============================================================================
 - Do not emit any primitive whose smallest dimension is below 0.005 m

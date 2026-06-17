@@ -146,6 +146,34 @@ SEAT_SURFACE_TYPES: Tuple[str, ...] = (
     "settee", "daybed",
 )
 
+# Industrial / factory-specific parent semantics. These are applied only when
+# scene classification says the scene is industrial, so ordinary residential
+# cabinets and racks keep the existing behavior.
+INDUSTRIAL_TOP_SURFACE_TYPES: Tuple[str, ...] = (
+    "industrial workbench", "workbench", "work table", "assembly bench",
+    "assembly table", "inspection table", "inspection station",
+    "packing table", "quality station", "metrology table", "fixture table",
+    "tool cart", "utility cart", "parts cart", "trolley",
+    "conveyor", "belt conveyor", "roller conveyor", "assembly line",
+    "production line", "pallet", "material pallet",
+)
+
+INDUSTRIAL_OPEN_SHELF_TYPES: Tuple[str, ...] = (
+    "pallet rack", "storage rack", "parts rack", "shelving rack",
+    "bin rack", "tool rack", "open rack", "material rack",
+)
+
+INDUSTRIAL_NO_PLANE_TYPES: Tuple[str, ...] = (
+    "cnc", "machining center", "machining cell", "machine tool",
+    "lathe", "milling machine", "grinder station", "press brake",
+    "hydraulic press", "stamping press", "injection molding",
+    "molding machine", "robot arm", "robot cell", "cobot",
+    "safety fence", "safety cage", "guard fence", "guard rail",
+    "control cabinet", "electrical cabinet", "switchgear",
+    "tool cabinet", "tool chest", "compressor", "pump", "forklift",
+    "agv", "utility skid", "server rack",
+)
+
 # ------------------------------------------------------------------
 # Wall-decoration whitelist (v3, 2026-05-02)
 # ------------------------------------------------------------------
@@ -300,8 +328,10 @@ class PlaneFinder:
 
     def __init__(self, detailed_geometry: Dict[str, Any],
                  describe_objects: Optional[List[Dict[str, Any]]] = None,
+                 scene_type_info: Optional[Dict[str, Any]] = None,
                  verbose: bool = False):
         self.detailed_geometry = detailed_geometry
+        self.scene_type_info = scene_type_info or {}
         self.verbose = verbose
         # Build a name -> describe-entry map for fast object_type lookup. Names
         # coming from stage5_describe sometimes differ slightly from
@@ -328,6 +358,74 @@ class PlaneFinder:
             if ot:
                 return ot
         return fallback or parent_name.lower()
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_policy_text(
+        self,
+        parent_name: str,
+        obj: Dict[str, Any],
+        object_type: str,
+    ) -> str:
+        entry = self.describe_by_name.get(self._norm(parent_name)) or {}
+        fields = [
+            parent_name,
+            object_type,
+            str(obj.get("object_type", "")),
+            str(obj.get("description", "")),
+            str(entry.get("description", "")),
+            str(entry.get("material_description", "")),
+        ]
+        return " ".join(f for f in fields if f).lower().replace("_", " ")
+
+    def _apply_industrial_plane_policy(
+        self,
+        parent_name: str,
+        obj: Dict[str, Any],
+        object_type: str,
+        has_top: bool,
+        has_open_shelves: bool,
+        has_seat: bool,
+    ) -> Tuple[bool, bool, bool]:
+        """Keep factory small-object placement on real work/material surfaces.
+
+        Generic rules treat every cabinet top or bench-like object as a surface.
+        In a factory, that would put decor on CNC enclosures, control cabinets,
+        robot cells, and safety fences. This policy narrows planes to workbenches,
+        conveyors, pallets, carts, and open material racks.
+        """
+        if not self._is_industrial_scene():
+            return has_top, has_open_shelves, has_seat
+
+        text = self._industrial_policy_text(parent_name, obj, object_type)
+        allowed_open = self._matches_any(text, INDUSTRIAL_OPEN_SHELF_TYPES)
+        allowed_top = self._matches_any(text, INDUSTRIAL_TOP_SURFACE_TYPES)
+        blocked = self._matches_any(text, INDUSTRIAL_NO_PLANE_TYPES)
+
+        if blocked and not allowed_open and not allowed_top:
+            if self.verbose:
+                print(
+                    f"   - industrial plane suppressed for {parent_name} "
+                    f"(type='{object_type}')"
+                )
+            return False, False, False
+
+        if allowed_open:
+            has_open_shelves = True
+            # Pallet/storage racks should expose shelf levels, not a decorative
+            # top cap plane that would receive floating items above the rack.
+            has_top = False
+        elif allowed_top:
+            has_top = True
+
+        # In industrial scenes, a token like "bench" usually means workbench,
+        # not a seat. Seating decoration is outside the factory floor scope.
+        has_seat = False
+        return has_top, has_open_shelves, has_seat
 
     def _get_describe_bbox(self, parent_name: str) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
         """Return (center, dimensions) from Stage 7 describe data when present."""
@@ -456,6 +554,10 @@ class PlaneFinder:
                 or self._matches_any(parent_norm, lab_bench_tokens)
             ):
                 has_seat = False
+
+        has_top, has_open_shelves, has_seat = self._apply_industrial_plane_policy(
+            parent_name, obj, object_type, has_top, has_open_shelves, has_seat
+        )
 
         if not (has_top or has_open_shelves or has_seat):
             return []
@@ -920,6 +1022,7 @@ class StageSmallObjectsRunner:
             Memory(workspace_dir=current_dir, memory_file=memory_file)
             if use_memory else None
         )
+        self.scene_type_info = self._load_scene_type_info()
         # Only instantiate the LLM when we will actually need it; this keeps
         # `--dry-run` (plane-discovery only) fast and offline.
         self._llm_kwargs = dict(model=model, base_url=base_url, api_key=api_key)
@@ -967,6 +1070,79 @@ class StageSmallObjectsRunner:
         # tell the LLM "on parent X, lamp & vase already exist; do not add
         # another one."
         self.stage4_placed_by_parent: Dict[str, List[str]] = {}
+
+    # ---------------- scene type ----------------
+
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:
+            if self.verbose:
+                print(f"Stage7: cannot read scene_type ({exc}); using generic small-object prompts")
+            return fallback
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_scene_context(self) -> Dict[str, Any]:
+        return {
+            "scene_type": "industrial",
+            "industrial_subtype": (self.scene_type_info or {}).get("industrial_subtype") or "general",
+            "placement_policy": (
+                "Place functional factory-floor small objects only: tools, fixtures, parts trays, "
+                "individual bins, cartons, workpieces, gauges, clipboards, tablets, labels, and safety markers. "
+                "Avoid residential decor."
+            ),
+            "allowed_examples": [
+                "wrench", "screwdriver", "caliper", "gauge", "fixture", "jig",
+                "parts tray", "fastener cup", "small parts bin", "tote box",
+                "workpiece", "machined part", "clipboard", "tablet", "barcode scanner",
+                "label roll", "tape roll", "carton", "warning tag",
+            ],
+            "forbidden_examples": [
+                "vase", "candle", "plant", "throw pillow", "picture frame",
+                "decorative bowl", "residential ornament",
+            ],
+        }
+
+    def _industrial_system_prompt_addendum(self) -> str:
+        if not self._is_industrial_scene():
+            return ""
+        return """
+
+[Industrial / Factory Scene Addendum]
+If the runtime payload says scene_context.scene_type == "industrial", treat this as a manufacturing or warehouse scene, not a residential interior.
+- Place functional production small objects only: individual tools, gauges, jigs, fixtures, small parts trays, fastener cups, bins/totes, cartons, labels, clipboards, tablets, barcode scanners, workpieces, and machined parts.
+- On workbenches / inspection tables / packing tables: prefer tools, measuring devices, fixtures, parts trays, paperwork/clipboard, tablet, label roll, tape roll, and small bins.
+- On conveyors: place only a few visible workpieces, cartons, or small totes if the image supports them. Do not use decorative clutter.
+- On pallet racks / storage racks / parts racks: use one item per visible bin, tote, carton, or spare part. Do not collapse rows into a single "row_of" or "set_of" item.
+- Never add residential decor such as candles, vases, plants, framed photos, throw pillows, blankets, decorative bowls, or coffee-table objects.
+"""
+
+    @staticmethod
+    def _is_industrial_disallowed_item(name: str, item_type: str, description: str) -> bool:
+        blob = f"{name} {item_type} {description}".lower().replace("_", " ")
+        forbidden = (
+            "vase", "candle", "plant", "throw pillow", "pillow", "blanket",
+            "picture frame", "framed photo", "photo frame", "decorative bowl",
+            "decor sphere", "ornament", "sculpture", "coffee table book",
+            "remote control",
+        )
+        return any(tok in blob for tok in forbidden)
 
     # ---------------- logging ----------------
 
@@ -1715,13 +1891,22 @@ class StageSmallObjectsRunner:
             "planes": self._build_planes_payload(planes),
             "stage1_small_object_hints": hints,
         }
+        if self._is_industrial_scene():
+            body["scene_context"] = self._industrial_scene_context()
         if already_on_parent:
             body["already_placed_by_stage4"] = sorted(set(already_on_parent))
 
-        prefix = (
-            "Decorate the following parent object. Base every decision on the "
-            "reference image and room style. Return JSON only.\n"
-        )
+        if self._is_industrial_scene():
+            prefix = (
+                "Place functional small objects for the following industrial parent object. "
+                "Base every decision on the reference image, factory semantics, and the "
+                "scene_context policy. Return JSON only.\n"
+            )
+        else:
+            prefix = (
+                "Decorate the following parent object. Base every decision on the "
+                "reference image and room style. Return JSON only.\n"
+            )
         if already_on_parent:
             prefix += (
                 "\nIMPORTANT: Stage 4 already placed coarse bbox placeholders "
@@ -2771,6 +2956,18 @@ class StageSmallObjectsRunner:
         used_names: set,
         occupants: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[SmallObjectItem]:
+        if self._is_industrial_scene() and self._is_industrial_disallowed_item(
+            str(raw_item.get("name", "")),
+            str(raw_item.get("item_type", "")),
+            str(raw_item.get("description", "")),
+        ):
+            self._log(
+                f"   skip residential/decor item on industrial plane {plane.plane_id}: "
+                f"{raw_item.get('name', raw_item.get('item_type', '?'))}",
+                "warning",
+            )
+            return None
+
         # ---- size ----
         size = raw_item.get("size")
         if not (isinstance(size, (list, tuple)) and len(size) >= 3):
@@ -3002,8 +3199,10 @@ class StageSmallObjectsRunner:
             entry["nearby_bboxes"] = self._nearby_bboxes_for_plane(p)
             planes_payload.append(entry)
         with open(planes_path, "w", encoding="utf-8") as f:
-            json.dump({"planes": planes_payload},
-                      f, ensure_ascii=False, indent=2)
+            json.dump({
+                "planes": planes_payload,
+                "scene_type_info": self.scene_type_info,
+            }, f, ensure_ascii=False, indent=2)
 
         # 2) items.json — the structured output of the LLM step.
         items_path = os.path.join(self.output_dir, "small_objects.json")
@@ -3016,6 +3215,7 @@ class StageSmallObjectsRunner:
                     "by_plane_type": self._plane_type_counts(),
                     "base_code_path": self.base_code_path,
                     "image_path": self.image_path,
+                    "scene_type_info": self.scene_type_info,
                     "generated_at": datetime.now().isoformat(timespec="seconds"),
                 },
             }, f, ensure_ascii=False, indent=2)
@@ -3041,6 +3241,7 @@ class StageSmallObjectsRunner:
                     "items_file": items_path,
                     "image_path": self.image_path,
                     "base_code_path": self.base_code_path,
+                    "scene_type_info": self.scene_type_info,
                 },
                 tags=["stage7_small_objects", "small_objects", "surface_decor"],
             )
@@ -3087,6 +3288,7 @@ class StageSmallObjectsRunner:
         finder = PlaneFinder(
             detailed_geometry=self.detailed_geometry,
             describe_objects=self.describe_objects,
+            scene_type_info=self.scene_type_info,
             verbose=self.verbose,
         )
         self.planes = finder.find_planes()
@@ -3214,7 +3416,8 @@ class StageSmallObjectsRunner:
         )
         if os.path.exists(prompt_path):
             with open(prompt_path, "r", encoding="utf-8") as f:
-                return f.read()
+                prompt = f.read()
+            return prompt + self._industrial_system_prompt_addendum()
         # Minimal fallback so the module still runs if the prompt file is
         # missing. The real prompt lives in agent_prompt/Stage7_small_objects_task.
         return (
@@ -3224,7 +3427,7 @@ class StageSmallObjectsRunner:
             "items:[{name,item_type,shape,local_uv,size,rotation_z,color_hint,"
             "description}]}]}. UVs in [0.05,0.95]. Items must fit inside the "
             "plane with 2 cm margin. No prose, no code fences."
-        )
+        ) + self._industrial_system_prompt_addendum()
 
 
 # ==============================================================================

@@ -85,6 +85,7 @@ class StageMaterialRunner:
             else None
         )
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
 
         self.geometry_code: Optional[str] = None
         self.describe_data: Dict = {}
@@ -116,6 +117,121 @@ class StageMaterialRunner:
             "save": "💾",
         }.get(level, "")
         print(f"{prefix} {msg}")
+
+    # ------------------------------------------------------------------
+    # Scene-type helpers
+    # ------------------------------------------------------------------
+    def _load_scene_type_info(self) -> Dict[str, Any]:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:  # noqa: BLE001
+            if self.verbose:
+                print(
+                    f"Stage10: cannot read scene_type ({exc}); "
+                    "using generic material prompt"
+                )
+            return fallback
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_material_context(self) -> str:
+        if not self._is_industrial_scene():
+            return ""
+        subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+        return f"""
+INDUSTRIAL / FACTORY MATERIAL CONTEXT
+- Scene subtype: {subtype}. Treat the image as a manufacturing, logistics, or technical facility, not a residential room.
+- Default large floor areas to sealed concrete or epoxy-coated concrete unless the image clearly shows another industrial surface.
+- Machine enclosures and control cabinets usually use powder_coat or painted_metal in off-white, grey, blue-grey, or green-grey.
+- Structural frames, rack uprights, robot bases, guards, and conveyors use painted_metal, brushed_aluminum, stainless_steel, or powder_coat.
+- Conveyor belts, rollers, feet, bumpers, cable covers, and mats use black rubber or dark pvc where applicable.
+- Safety rails, guard edges, warning posts, bollards, and hazard-marked parts use safety yellow or red accents when visible.
+- Screens and indicator LEDs use glass or emission; emergency stop buttons are red plastic.
+- Bins, totes, trays, caps, tags, and cable ducts are plastic or pvc.
+- Avoid residential defaults such as hardwood, carpet, rugs, wallpaper, decorative fabric, sofas, and ornamental wood unless explicitly visible.
+"""
+
+    @staticmethod
+    def _industrial_floor_material() -> Dict:
+        return {
+            "material_type": "concrete",
+            "base_color": [0.48, 0.49, 0.47, 1.0],
+            "roughness": 0.78,
+            "metallic": 0.0,
+            "specular": 0.28,
+            "pattern": "solid",
+            "pattern_scale": 3.0,
+            "pattern_color2": [0.40, 0.41, 0.40, 1.0],
+            "bump_strength": 0.06,
+            "description": "sealed light grey industrial concrete floor with subtle scuffs and anti-slip texture",
+        }
+
+    @staticmethod
+    def _industrial_wall_material() -> Dict:
+        return {
+            "material_type": "paint",
+            "base_color": [0.78, 0.80, 0.78, 1.0],
+            "roughness": 0.86,
+            "metallic": 0.0,
+            "specular": 0.25,
+            "finish": "matte",
+            "bump_strength": 0.03,
+            "wall_visual_intensity": "subtle",
+            "description": "plain light grey painted industrial wall or concrete partition",
+        }
+
+    def _sanitize_industrial_floor_wall(
+        self, floor_mat: Dict, wall_mat: Dict
+    ) -> Tuple[Dict, Dict]:
+        if not self._is_industrial_scene():
+            return floor_mat, wall_mat
+
+        floor = dict(floor_mat or {})
+        wall = dict(wall_mat or {})
+
+        bad_floor_types = {"hardwood", "carpet", "laminate", "marble"}
+        bad_floor_patterns = {"plank", "herringbone", "hexagonal"}
+        floor_type = str(floor.get("material_type", "")).lower()
+        floor_pattern = str(floor.get("pattern", "")).lower()
+        if floor_type in bad_floor_types:
+            floor = self._industrial_floor_material()
+        else:
+            base = self._industrial_floor_material()
+            for key, value in base.items():
+                floor.setdefault(key, value)
+            if floor_pattern in bad_floor_patterns:
+                floor["pattern"] = "solid"
+            if floor.get("material_type") not in {"concrete", "stone", "tile"}:
+                floor["material_type"] = "concrete"
+
+        bad_wall_types = {"wallpaper", "wood_panel"}
+        wall_type = str(wall.get("material_type", "")).lower()
+        if wall_type in bad_wall_types:
+            wall = self._industrial_wall_material()
+        else:
+            base = self._industrial_wall_material()
+            for key, value in base.items():
+                wall.setdefault(key, value)
+            if wall.get("material_type") not in {"paint", "concrete", "plaster", "brick"}:
+                wall["material_type"] = "paint"
+            wall["wall_visual_intensity"] = "subtle"
+
+        return floor, wall
 
     # ------------------------------------------------------------------
     # Image encoding
@@ -540,6 +656,7 @@ class StageMaterialRunner:
             if palette
             else "(no palette anchor — be self-consistent)"
         )
+        industrial_context = self._industrial_material_context()
 
         sys_prompt = f"""You are a Blender PBR material expert specialising in SMALL on-surface items (laboratory glassware, instruments, computer peripherals, kitchen utensils, decor, paperwork, etc.). Assign realistic PBR material parameters to EVERY part listed below — one entry per part.
 
@@ -568,6 +685,7 @@ SMALL-OBJECT GUIDANCE
 12. Reagent bottles with colored cap: bottle body = "plastic" or "glass" depending on appearance hint; cap = "plastic" with cap color.
 13. GENERIC PRINCIPLE: prefer the MOST SPECIFIC token. NEVER default everything to "plastic" — that is the original failure mode this prompt fixes.
 
+{industrial_context}
 HARD RULES (same as major-object batcher)
 - ONE entry per part. Do not omit any (objectName, partName) pair.
 - LINEAR RGB, 0.0-1.0.
@@ -789,6 +907,7 @@ EVERY (item, part) listed below MUST appear in the output."""
             )
 
         allowed_types_str = " | ".join(self._MATERIAL_TYPES)
+        industrial_context = self._industrial_material_context()
         sys_prompt = f"""You are a PBR scene-palette curator. Given a reference image, a room-style summary, and an inventory of objects, produce ONE shared PALETTE that every downstream per-part material decision will reference. This palette is the source-of-truth for cross-object consistency.
 
 Allowed material_type values (use these tokens EXACTLY): {allowed_types_str}
@@ -832,7 +951,8 @@ Guidelines:
 - If a slot does not apply (e.g. no wood in a steel lab), set the *_type to null and pick a neutral rgba.
 - All RGBA values are LINEAR (NOT sRGB) and in [0.0, 1.0].
 - "primary_*" = the appearance shared by most instances of that material in the scene.
-- The palette is GUIDANCE, downstream stages may deviate when an object is clearly a different material; but for any part whose role is a worktop/cabinet/frame/etc. the corresponding palette entry MUST be used."""
+- The palette is GUIDANCE, downstream stages may deviate when an object is clearly a different material; but for any part whose role is a worktop/cabinet/frame/etc. the corresponding palette entry MUST be used.
+{industrial_context}"""
 
         style_summary_in = ""
         if room_style:
@@ -1000,6 +1120,7 @@ Guidelines:
                 f"palette={room_style.get('color_palette', [])}, "
                 f"mood={room_style.get('mood', '')}\n"
             )
+        industrial_context = self._industrial_material_context()
 
         sys_prompt = f"""You are a Blender PBR material expert. Assign realistic PBR material parameters to EVERY part listed below, one entry per part.
 
@@ -1022,6 +1143,7 @@ HARD RULES
 6. Colors in LINEAR RGB, 0.0-1.0 (not sRGB 0-255).
 7. NEVER default an unknown lab/kitchen surface to plain "plastic". Pick the most specific token from the allowed list.
 
+{industrial_context}
 {self._MATERIAL_REFERENCE}
 
 OUTPUT FORMAT (STRICT JSON, no markdown fences):
@@ -1146,12 +1268,13 @@ EVERY (object, part) listed below MUST appear in the output."""
         style_hint = room_style.get("style_name", "modern")
         keywords = ", ".join(room_style.get("keywords", []))
 
+        industrial_context = self._industrial_material_context()
         system_prompt = f"""You are a Blender PBR material expert specializing in architectural surfaces.
 Analyze the provided top-down floor plan image and generate detailed PBR material definitions for the FLOOR and WALLS.
 
 Room style: {style_hint}
 Style keywords: {keywords}
-
+{industrial_context}
 Output ONLY valid JSON:
 {{
   "floor_material": {{
@@ -1179,7 +1302,8 @@ Output ONLY valid JSON:
 }}
 
 Color values are in linear RGB 0.0-1.0.
-Determine floor and wall materials from what you see in the image."""
+Determine floor and wall materials from what you see in the image.
+For industrial scenes, avoid residential materials: no hardwood, carpet, rugs, wallpaper, or decorative wall panels unless explicitly visible."""
 
         b64, mime = self._encode_image(self.image_path)
         messages = [
@@ -1195,8 +1319,12 @@ Determine floor and wall materials from what you see in the image."""
             ),
         ]
 
-        floor_mat = self._default_floor_material()
-        wall_mat = self._default_wall_material()
+        if self._is_industrial_scene():
+            floor_mat = self._industrial_floor_material()
+            wall_mat = self._industrial_wall_material()
+        else:
+            floor_mat = self._default_floor_material()
+            wall_mat = self._default_wall_material()
 
         try:
             response = self.llm.invoke(messages)
@@ -1219,7 +1347,7 @@ Determine floor and wall materials from what you see in the image."""
         except Exception as e:
             self._log(f"Floor/wall material error: {e}", "error")
 
-        return floor_mat, wall_mat
+        return self._sanitize_industrial_floor_wall(floor_mat, wall_mat)
 
     # ------------------------------------------------------------------
     # Code generation: inject materials
@@ -2089,6 +2217,7 @@ def create_pbr_material(name, base_color, roughness=0.5, metallic=0.0, specular=
         self._log(f"Code saved: {output_path}", "save")
 
         config = {
+            "scene_type_info": self.scene_type_info,
             "scene_palette": self.scene_palette,
             "part_materials": self.part_materials,
             "small_part_materials": self.small_part_materials,
@@ -2104,6 +2233,8 @@ def create_pbr_material(name, base_color, roughness=0.5, metallic=0.0, specular=
                     len(v) for v in self.small_part_materials.values()
                 ),
                 "generated": datetime.now().isoformat(),
+                "scene_type": (self.scene_type_info or {}).get("scene_type"),
+                "industrial_subtype": (self.scene_type_info or {}).get("industrial_subtype"),
             },
         }
         config_path = os.path.join(self.output_dir, "material_config.json")
@@ -2133,6 +2264,7 @@ def create_pbr_material(name, base_color, roughness=0.5, metallic=0.0, specular=
                     "config_file": config_path,
                     "image_path": self.image_path,
                     "small_objects_integrated": bool(self.small_part_materials),
+                    "scene_type_info": self.scene_type_info,
                 },
                 tags=[
                     "stage10_material",

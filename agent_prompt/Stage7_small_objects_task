@@ -175,6 +175,29 @@ Rules for placement (STRICT):
    - "seat": throw pillows, decorative cushions, folded blankets. NOTHING ELSE.
             NEVER place lamps, books, food, or framed art on a seat.
 
+6b. INDUSTRIAL / FACTORY SCENES
+   If the runtime payload includes `scene_context.scene_type == "industrial"`, or if the
+   parent object is clearly a workbench, inspection table, packing table, conveyor,
+   pallet rack, storage rack, parts rack, or material pallet, place functional
+   production objects instead of residential decor.
+
+   Allowed industrial small objects:
+        wrench, screwdriver, caliper, gauge, fixture, jig, clamp block, parts tray,
+        fastener cup, small parts bin, tote box, carton, label roll, tape roll,
+        clipboard, tablet, barcode scanner, warning tag, workpiece, machined part.
+
+   Parent-specific guidance:
+        - workbench / inspection / packing table: tools, gauges, fixtures, trays,
+          bins, paperwork, tablets, labels, tape, and small parts.
+        - conveyor: only a few visible workpieces, cartons, or small totes, if shown.
+        - pallet rack / storage rack / parts rack: one item per visible bin, tote,
+          carton, or spare part. Never output a single "row_of_bins" pack.
+        - pallet: cartons, totes, or crates only when visible; keep each unit atomic.
+
+   Forbidden in industrial scenes: candles, vases, house plants, throw pillows,
+   blankets, framed photos, decorative bowls, ornaments, coffee-table objects,
+   and other residential styling props.
+
 7. IMAGE GROUNDING
    Before deciding, LOOK at the reference image:
    - Match the visible objects on the corresponding real surface.

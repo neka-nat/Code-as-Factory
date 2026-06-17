@@ -56,6 +56,7 @@ class StageRenderRunner:
         self.memory = Memory(workspace_dir=current_dir, memory_file=memory_file) if use_memory else None
         self.prompts = PromptManager()
         self.llm = LLMClient(model=model, base_url=base_url, api_key=api_key)
+        self.scene_type_info = self._load_scene_type_info()
 
         self.stage1_json = None
         self.stage2_json = None
@@ -73,6 +74,51 @@ class StageRenderRunner:
                 "light": "💡",
             }.get(level, "")
             print(f"{prefix} {msg}")
+
+    # ------------------------------------------------------------------
+    # Scene-type helpers
+    # ------------------------------------------------------------------
+    def _load_scene_type_info(self) -> dict:
+        fallback = {
+            "scene_type": "other",
+            "confidence": 0.0,
+            "reasoning": "no scene_type in memory",
+            "lab_subtype": None,
+            "industrial_subtype": None,
+            "source": "fallback",
+        }
+        if not self.memory:
+            return fallback
+        try:
+            from scene_classifier import read_scene_type  # type: ignore
+            return read_scene_type(self.memory)
+        except Exception as exc:  # noqa: BLE001
+            if self.verbose:
+                print(
+                    f"Stage12: cannot read scene_type ({exc}); "
+                    "using generic lighting prompt"
+                )
+            return fallback
+
+    def _is_industrial_scene(self) -> bool:
+        return (
+            (self.scene_type_info or {}).get("scene_type") == "industrial"
+            and float((self.scene_type_info or {}).get("confidence", 0.0) or 0.0) >= 0.5
+        )
+
+    def _industrial_lighting_context(self) -> str:
+        if not self._is_industrial_scene():
+            return ""
+        subtype = (self.scene_type_info or {}).get("industrial_subtype") or "general"
+        return f"""
+INDUSTRIAL / FACTORY LIGHTING MODE
+- Scene subtype: {subtype}. Treat the scene as a manufacturing, warehouse, lab-production, or technical facility.
+- Prefer bright, even overhead work lighting over warm residential mood lighting.
+- Use neutral-to-cool white color temperature (4000-5500K), high intensity, broad AREA lights, and soft shadows for clear visibility.
+- Overall mood should usually be "bright_modern" unless the image clearly shows dramatic or low lighting.
+- Primary light source should usually be overhead recessed/high-bay/area lighting or mixed overhead plus daylight.
+- Do not infer table lamps, cozy pendant lighting, or decorative warm ambience unless those fixtures are visibly present.
+"""
 
     # ------------------------------------------------------------------
     # Utilities
@@ -158,6 +204,14 @@ class StageRenderRunner:
             stage1_entry = self.memory.get_latest(stage="stage1", type="result")
             if stage1_entry:
                 self.image_path = stage1_entry.metadata.get("image_path")
+
+        # Prefer propagated scene_type_info from Stage 11/10 outputs when available.
+        if self.use_memory:
+            for stage_name in ("stage11_texture", "stage10_material"):
+                entry = self.memory.get_latest(stage=stage_name, type="result")
+                if entry and isinstance(entry.metadata.get("scene_type_info"), dict):
+                    self.scene_type_info = entry.metadata["scene_type_info"]
+                    break
 
         if self.image_path and os.path.exists(self.image_path):
             self._log(f"Reference image: {self.image_path}", "success")
@@ -390,6 +444,7 @@ class StageRenderRunner:
             lamp_lines = [f"  - {l['name']} at ({l['location_expr']})" for l in scene["lamp_objects"]]
             lamp_info = "\nExisting lamp objects in the scene:\n" + "\n".join(lamp_lines)
 
+        industrial_context = self._industrial_lighting_context()
         system_prompt = f"""You are a lighting analysis expert. Analyze the provided top-down floor plan image and extract lighting information.
 
 CRITICAL - SCENE COORDINATE SYSTEM:
@@ -401,7 +456,7 @@ CRITICAL - SCENE COORDINATE SYSTEM:
 - West wall is at X={-w/2:.2f}, East wall at X={w/2:.2f}
 - Ceiling is at Z={h}
 {lamp_info}
-
+{industrial_context}
 All light positions MUST use this coordinate system. Do NOT use image pixel coordinates.
 For example, a ceiling light centered in the room should be at (0, 0, {h}).
 A table lamp should be at the SAME X,Y as the table/lamp object, with Z slightly above the object top.
@@ -539,6 +594,7 @@ Analyze shadows, highlights, and visible light fixtures to determine:
         sw = scene["scene_w"]
         sd = scene["scene_d"]
         analysis = (self.lighting_config or self._default_lighting()).get("lighting_analysis", {})
+        ceiling_energy_cap = 500.0 if self._is_industrial_scene() else 250.0
 
         def as_float(value, default):
             try:
@@ -609,7 +665,7 @@ Analyze shadows, highlights, and visible light fixtures to determine:
                 area_class = _classify_area(px, py, pz)
                 if area_class == "ceiling":
                     size = max(size, area_min_size)
-                    energy = min(energy, 250.0)
+                    energy = min(energy, ceiling_energy_cap)
                 else:
                     # Wall-class window pane: roughly window-shaped
                     # rectangle covering a typical 0.6–2.4 m vertical span
@@ -1432,6 +1488,57 @@ IMPORTANT: Only generate lighting + render setup. NO material code.
         return None
 
     def _default_lighting(self) -> dict:
+        scene = self._extract_scene_info() if self.scene_code else {
+            "scene_w": 8.0,
+            "scene_d": 6.0,
+            "wall_h": 2.8,
+        }
+        h = float(scene.get("wall_h", 2.8) or 2.8)
+        sw = float(scene.get("scene_w", 8.0) or 8.0)
+        sd = float(scene.get("scene_d", 6.0) or 6.0)
+
+        if self._is_industrial_scene():
+            size = max(3.0, min(7.0, min(sw, sd) * 0.6))
+            return {
+                "scene_type_info": self.scene_type_info,
+                "lighting_analysis": {
+                    "overall_mood": "bright_modern",
+                    "primary_light_source": {
+                        "type": "recessed",
+                        "direction": "overhead",
+                        "color_temperature": 5500,
+                        "intensity": "high"
+                    },
+                    "light_sources": [
+                        {
+                            "id": "industrial_overhead_main",
+                            "type": "area",
+                            "blender_type": "AREA",
+                            "position": {"x": 0, "y": 0, "z": h},
+                            "color_rgb": [242, 248, 255],
+                            "energy": 480,
+                            "size": size,
+                            "notes": "Broad neutral-white factory overhead work light"
+                        },
+                        {
+                            "id": "industrial_overhead_fill",
+                            "type": "area",
+                            "blender_type": "AREA",
+                            "position": {"x": 0, "y": 0, "z": h * 0.95},
+                            "color_rgb": [255, 255, 248],
+                            "energy": 260,
+                            "size": max(size * 0.75, 2.5),
+                            "notes": "Secondary even fill for aisles and work cells"
+                        }
+                    ],
+                    "ambient_light": {
+                        "color_rgb": [245, 248, 255],
+                        "strength": 0.45
+                    },
+                    "shadow_softness": "soft"
+                }
+            }
+
         return {
             "lighting_analysis": {
                 "overall_mood": "warm_cozy",
@@ -1446,7 +1553,7 @@ IMPORTANT: Only generate lighting + render setup. NO material code.
                         "id": "light_main",
                         "type": "area",
                         "blender_type": "AREA",
-                        "position": {"x": 0, "y": 0, "z": 2.8},
+                        "position": {"x": 0, "y": 0, "z": h},
                         "color_rgb": [255, 244, 230],
                         "energy": 300,
                         "size": 3.0,
@@ -1481,6 +1588,9 @@ IMPORTANT: Only generate lighting + render setup. NO material code.
             f.write(code)
         self._log(f"Code saved: {output_path}", "success")
 
+        if isinstance(self.lighting_config, dict):
+            self.lighting_config.setdefault("scene_type_info", self.scene_type_info)
+
         lighting_path = os.path.join(self.output_dir, "render_lighting.json")
         with open(lighting_path, "w", encoding="utf-8") as f:
             json.dump(self.lighting_config, f, ensure_ascii=False, indent=2)
@@ -1496,7 +1606,8 @@ IMPORTANT: Only generate lighting + render setup. NO material code.
                     "summary": f"{code.count(chr(10)) + 1} lines with lighting and render settings",
                     "output_file": output_path,
                     "lighting_file": lighting_path,
-                    "image_path": self.image_path
+                    "image_path": self.image_path,
+                    "scene_type_info": self.scene_type_info
                 },
                 tags=["stage12_render", "blender_code", "render", "lighting"]
             )
