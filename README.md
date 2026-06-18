@@ -376,14 +376,54 @@ Industrial routing changes the pipeline behavior end to end:
   concrete/epoxy floors, painted or powder-coated metal, safety colors, rubber
   belts, plastic bins, and bright overhead work lighting.
 
+### Factory Generation Command Flow
+
+For controlled factory tests, use the checked-in prompt file
+`image_prompt_gen/industrial_prompts.json`. It contains a hand-authored
+top-down factory-floor prompt, which is more stable for regression testing than
+random `non_residential` prompt generation.
+
+Generate the factory test image:
+
+```bash
+python image_prompt_gen/topdown_room_image_generator.py image \
+  --prompts image_prompt_gen/industrial_prompts.json \
+  --image-model gemini-3.1-flash-image \
+  --api-key "$SCENEGEN_TEXTURE_API_KEY" \
+  --base-url "$SCENEGEN_TEXTURE_BASE_URL" \
+  --output-dir generated_images/industrial \
+  --aspect-ratio 16:9 \
+  --image-size 1K
+```
+
+This writes a PNG under `generated_images/industrial/`, typically named like:
+
+```text
+generated_images/industrial/001_factory_floor_industrial_test.png
+```
+
+Run the 3D pipeline on that generated image and force the industrial route:
+
+```bash
+python run_pipeline.py \
+  --image generated_images/industrial/001_factory_floor_industrial_test.png \
+  --scene-type industrial
+```
+
 For detailed small factory objects, combine it with `--detail-small-objects`:
 
 ```bash
 python run_pipeline.py \
-  --image path/to/factory_floor.png \
+  --image generated_images/industrial/001_factory_floor_industrial_test.png \
   --scene-type industrial \
   --detail-small-objects
 ```
+
+The `--scene-type industrial` flag is recommended for tests because it bypasses
+classification ambiguity and guarantees the industrial prompt addenda and scale
+audit are active. If you omit it, filenames containing terms such as `factory`,
+`warehouse`, `cnc`, `assembly_line`, `robot_cell`, `conveyor`, or `pallet_rack`
+can still trigger the industrial route through the automatic classifier.
 
 ## Batch Runs
 
